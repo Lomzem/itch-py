@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from itch import Rig
+
 ITCH_PY = Path(__file__).resolve().parent.parent
 READY = "itch-sim listening on "
 
@@ -67,3 +69,10 @@ def sim() -> Iterator[str]:
         process.wait()
         if process.stdout:
             process.stdout.close()
+
+
+@pytest.fixture
+def rig(sim: str) -> Iterator[Rig]:
+    """A connection to the session's `itch-sim`."""
+    with Rig.connect(sim) as rig:
+        yield rig
