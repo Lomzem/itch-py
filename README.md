@@ -21,6 +21,18 @@ with Rig.connect("tcp://127.0.0.1:<port>") as rig:
     print(rig.label, rig.hardware_id, rig.firmware_version)
 ```
 
+## Rig logs
+
+The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger:
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+with Rig.connect("tcp://127.0.0.1:<port>", log_level=logging.INFO) as rig:
+    ...
+```
+
 ## Development
 
 Uses [uv](https://docs.astral.sh/uv/):

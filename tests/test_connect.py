@@ -6,36 +6,10 @@ import socket
 import warnings
 
 import pytest
-from scripted_rig import ScriptedRig
+from scripted_rig import ACME_HELLO, answering
 
 from itch import DevelopmentBuildWarning, ItchError, ProtocolMismatchError, Rig
-from itch._wire import (
-    FEATURE_WIFI,
-    Hello,
-    HelloReply,
-    Message,
-    OkResponse,
-    Request,
-    UnknownEvent,
-)
-
-ACME_HELLO = HelloReply(
-    protocol=1,
-    firmware_version="1.0.0",
-    dirty=False,
-    features=0,
-    channel_count=16,
-    board_revision="A",
-    hardware_id=bytes.fromhex("60 55 f9 c0 27 18"),
-    label="bench3",
-)
-
-
-def answering(hello: HelloReply, *before: Message) -> ScriptedRig:
-    def answer(request: Request) -> list[Message]:
-        return [*before, OkResponse(request.request_id, hello)]
-
-    return ScriptedRig(answer)
+from itch._wire import FEATURE_WIFI, Hello, HelloReply, OkResponse, UnknownEvent
 
 
 def test_connects_to_the_simulator(sim: str) -> None:
