@@ -290,7 +290,8 @@ def _new_token() -> int:
 
 
 def _bit(channel: int) -> int:
-    if channel not in CHANNELS:
+    # `in range` alone would let `True` through as CH1 and `1.0` through as a float.
+    if type(channel) is not int or channel not in CHANNELS:
         raise ValueError(f"Channel {channel!r} doesn't exist: a Rig's Channels are 1 to 16.")
     return 1 << (channel - 1)
 

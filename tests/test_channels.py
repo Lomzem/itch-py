@@ -1,5 +1,7 @@
 """Setting and reading Channels against `itch-sim`."""
 
+import re
+
 import pytest
 from scripted_rig import ACME_HELLO, ScriptedRig
 
@@ -71,18 +73,18 @@ def test_a_write_outside_a_session_makes_no_round_trip() -> None:
     assert issubclass(LeaseRequiredError, ItchError)
 
 
-@pytest.mark.parametrize("channel", [0, 17, -1])
+@pytest.mark.parametrize("channel", [0, 17, -1, True, 1.0, "3"])
 def test_a_channel_outside_1_to_16_raises_value_error(rig: Rig, channel: int) -> None:
-    message = rf"Channel {channel} doesn't exist.*1 to 16"
+    message = rf"Channel {re.escape(repr(channel))} doesn't exist.*1 to 16"
     with pytest.raises(ValueError, match=message):
         rig.get_channel(channel)
     with pytest.raises(ValueError, match=message):
-        rig.get_channels([1, channel])
+        rig.get_channels([2, channel])
     with rig.session():
         with pytest.raises(ValueError, match=message):
             rig.set_channel(channel, "on")
         with pytest.raises(ValueError, match=message):
-            rig.set_channels({1: "on", channel: "off"})
+            rig.set_channels({2: "on", channel: "off"})
 
 
 def test_an_invalid_position_raises_value_error(rig: Rig) -> None:

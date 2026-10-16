@@ -80,7 +80,8 @@ def test_the_heartbeat_renews_every_third_of_the_ttl_until_release() -> None:
 
 def test_the_heartbeat_does_not_disturb_user_requests() -> None:
     with lease_peer(ttl_ms=15) as peer, Rig.connect(peer.url) as rig, rig.session():
-        for _ in range(200):
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
             assert rig.get_channel(1) == "on"
         assert RenewLease in sent(peer)
 
