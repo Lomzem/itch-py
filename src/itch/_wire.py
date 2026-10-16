@@ -229,7 +229,15 @@ class ErrorResponse:
     detail: str
 
 
-Message = Request | OkResponse | ErrorResponse
+@dataclass(frozen=True)
+class UnknownEvent:
+    """An Event this client doesn't know. Clients ignore them."""
+
+    type: int
+    body: bytes
+
+
+Message = Request | OkResponse | ErrorResponse | UnknownEvent
 
 
 def encode(message: Message) -> bytes:
@@ -249,6 +257,9 @@ def encode(message: Message) -> bytes:
             w.u32(request_id)
             w.u8(code)
             w.text(detail)
+        case UnknownEvent(type_, body):
+            w.u8(type_)
+            w.raw(body)
     return w.getvalue()
 
 
@@ -257,7 +268,7 @@ def decode(payload: bytes) -> Message:
     r = _Reader(payload)
     type_ = r.u8()
     if _FIRST_EVENT_TYPE <= type_ < _RESPONSE_BIT:
-        raise DecodeError(f"unknown event type 0x{type_:02x}")
+        return UnknownEvent(type_, payload[1:])
     request_id = r.u32()
     message: Message
     if type_ & _RESPONSE_BIT:

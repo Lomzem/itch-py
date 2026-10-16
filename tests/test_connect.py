@@ -3,12 +3,21 @@
 import dataclasses
 import re
 import socket
+import warnings
 
 import pytest
 from scripted_rig import ScriptedRig
 
 from itch import DevelopmentBuildWarning, ItchError, ProtocolMismatchError, Rig
-from itch._wire import FEATURE_WIFI, Hello, HelloReply, Message, OkResponse, Request
+from itch._wire import (
+    FEATURE_WIFI,
+    Hello,
+    HelloReply,
+    Message,
+    OkResponse,
+    Request,
+    UnknownEvent,
+)
 
 ACME_HELLO = HelloReply(
     protocol=1,
@@ -22,9 +31,9 @@ ACME_HELLO = HelloReply(
 )
 
 
-def answering(hello: HelloReply) -> ScriptedRig:
-    def answer(request: Request) -> Message:
-        return OkResponse(request.request_id, hello)
+def answering(hello: HelloReply, *before: Message) -> ScriptedRig:
+    def answer(request: Request) -> list[Message]:
+        return [*before, OkResponse(request.request_id, hello)]
 
     return ScriptedRig(answer)
 
@@ -40,6 +49,15 @@ def test_sends_hello_first() -> None:
     with answering(ACME_HELLO) as peer, Rig.connect(peer.url) as rig:
         assert peer.requests[0].body == Hello()
         assert (rig.label, rig.hardware_id) == ("bench3", "60:55:F9:C0:27:18")
+
+
+def test_ignores_unknown_events_and_stale_replies() -> None:
+    stale = OkResponse(0xDEAD, dataclasses.replace(ACME_HELLO, label="stale"))
+    with (
+        answering(ACME_HELLO, UnknownEvent(0x7F, b"\x01\x02"), stale) as peer,
+        Rig.connect(peer.url) as rig,
+    ):
+        assert rig.label == "bench3"
 
 
 def test_refuses_a_protocol_mismatch() -> None:
@@ -64,6 +82,15 @@ def test_refuses_a_protocol_mismatch() -> None:
 def test_warns_about_a_development_build(hello: HelloReply) -> None:
     with answering(hello) as peer, pytest.warns(DevelopmentBuildWarning, match="bench3"):
         Rig.connect(peer.url).close()
+
+
+def test_closes_when_the_warning_is_raised_as_an_error() -> None:
+    with answering(dataclasses.replace(ACME_HELLO, dirty=True)) as peer:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(DevelopmentBuildWarning):
+                Rig.connect(peer.url)
+        assert peer.closed.wait(2)
 
 
 def test_closes_at_the_end_of_a_with_block() -> None:

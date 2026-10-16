@@ -1,14 +1,14 @@
 """A scripted TCP peer for the few cases `itch-sim` can't produce.
 
-It isn't a Rig: it answers each request with whatever `answer` returns (`None` sends nothing),
-and records what it was sent.
+It isn't a Rig: it answers each request with the messages `answer` returns, maybe none, and
+records what it was sent.
 """
 
 from __future__ import annotations
 
 import socket
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
@@ -16,7 +16,7 @@ from itch._wire import Message, Request, decode, encode
 
 
 class ScriptedRig:
-    def __init__(self, answer: Callable[[Request], Message | None]) -> None:
+    def __init__(self, answer: Callable[[Request], Iterable[Message]]) -> None:
         self._answer = answer
         self._listener = socket.create_server(("127.0.0.1", 0))
         host, port = self._listener.getsockname()
@@ -47,6 +47,6 @@ class ScriptedRig:
                     request = decode(payload)
                     assert isinstance(request, Request)
                     self.requests.append(request)
-                    if (reply := self._answer(request)) is not None:
+                    for reply in self._answer(request):
                         connection.sendall(encode_frame(encode(reply)))
         self.closed.set()

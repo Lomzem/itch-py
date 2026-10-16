@@ -48,13 +48,17 @@ class Rig:
         Warns with `DevelopmentBuildWarning` if the Rig runs a development build.
         """
         rig = cls(open_transport(name))
-        if rig._dev_build_notes:
-            warnings.warn(
-                f"Rig {rig.label} runs a development build ({', '.join(rig._dev_build_notes)}). "
-                "Have the dev flash a release build before QA use it.",
-                DevelopmentBuildWarning,
-                stacklevel=2,
-            )
+        if notes := rig._dev_build_notes:
+            try:
+                warnings.warn(
+                    f"Rig {rig.label} runs a development build ({', '.join(notes)}). "
+                    "Have the dev flash a release build before QA use it.",
+                    DevelopmentBuildWarning,
+                    stacklevel=2,
+                )
+            except BaseException:
+                rig.close()  # The warning was turned into an error.
+                raise
         return rig
 
     @property
@@ -110,7 +114,10 @@ class Rig:
                 if payload is None:
                     break
                 message = _wire.decode(payload)
-                if isinstance(message, _wire.Request) or message.request_id != request_id:
+                if (
+                    not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
+                    or message.request_id != request_id
+                ):
                     continue  # Not a reply, or a reply to an earlier request.
                 if isinstance(message, _wire.ErrorResponse):
                     raise ItchError(f"Rig {self._name} refused {body.TYPE.name}: {message.detail}")
