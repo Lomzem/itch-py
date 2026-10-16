@@ -6,7 +6,8 @@ trailing bytes, valid bools and UTF-8, and text within its limit.
 
 Adding a message means a `RequestType` value, a request body and a reply body here (each with
 `TYPE`, `encode` and `decode`), entries in `RequestBody`, `ReplyBody` and the two registries, and
-the type in the vector test's name maps.
+the type in the vector test's name maps. An Event is a dataclass with `TYPE`, `encode` and
+`decode`, an entry in `_EVENTS` and the `Message` union, and the Event name map.
 """
 
 from __future__ import annotations
@@ -25,6 +26,12 @@ MAX_LABEL = 64
 FEATURE_WIFI = 1 << 0
 """`Hello` `features` bit: the firmware was built with the `wifi` feature."""
 
+LOG_LEVEL_DEBUG = 4
+"""Rig log levels run from 0 off through 1 error, 2 warn and 3 info to 4 debug."""
+
+MAX_LOG_TEXT = 1024 - 6
+"""The longest Log Event text: the payload cap less `type`, `level` and `dropped`."""
+
 _RESPONSE_BIT = 0x80
 _FIRST_EVENT_TYPE = 0x40
 _STATUS_OK = 0
@@ -35,6 +42,7 @@ class RequestType(IntEnum):
     """The `type` byte of a request; its response's is `type | 0x80`."""
 
     Hello = 0x01
+    SetLogLevel = 0x07
 
 
 class ErrorCode(IntEnum):
@@ -101,6 +109,10 @@ class _Reader:
             return self.raw(size).decode("utf-8")
         except UnicodeDecodeError as err:
             raise DecodeError("text isn't valid UTF-8") from err
+
+    def rest(self) -> bytes:
+        self._pos, start = len(self._data), self._pos
+        return self._data[start:]
 
     def finish(self) -> None:
         if self._pos != len(self._data):
@@ -198,13 +210,80 @@ class HelloReply:
         )
 
 
+# --- SetLogLevel and the Log Event ------------------------------------------------------------
+
+
+def _log_level(r: _Reader, lowest: int) -> int:
+    level = r.u8()
+    if not lowest <= level <= LOG_LEVEL_DEBUG:
+        raise DecodeError(f"log level {level} isn't {lowest} to {LOG_LEVEL_DEBUG}")
+    return level
+
+
+@dataclass(frozen=True)
+class SetLogLevel:
+    TYPE: ClassVar[RequestType] = RequestType.SetLogLevel
+
+    level: int
+
+    def encode(self, w: _Writer) -> None:
+        w.u8(self.level)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(level=_log_level(r, 0))
+
+
+@dataclass(frozen=True)
+class SetLogLevelReply:
+    TYPE: ClassVar[RequestType] = RequestType.SetLogLevel
+
+    def encode(self, w: _Writer) -> None:
+        pass
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls()
+
+
+@dataclass(frozen=True)
+class LogEvent:
+    """One line of the Rig's log. `text` runs to the end of the payload."""
+
+    TYPE: ClassVar[int] = 0x40
+
+    level: int
+    """1 error to 4 debug."""
+    dropped: int
+    """Log Events the Rig dropped for this connection since the last one sent."""
+    text: str
+
+    def encode(self, w: _Writer) -> None:
+        w.u8(self.level)
+        w.u32(self.dropped)
+        data = self.text.encode("utf-8")
+        if len(data) > MAX_LOG_TEXT:
+            raise ValueError(f"log text is {len(data)} bytes, over {MAX_LOG_TEXT}")
+        w.raw(data)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        level, dropped = _log_level(r, 1), r.u32()
+        try:
+            text = r.rest().decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise DecodeError("log text isn't valid UTF-8") from err
+        return cls(level=level, dropped=dropped, text=text)
+
+
 # --- Envelope ----------------------------------------------------------------------------------
 
-RequestBody = Hello
-ReplyBody = HelloReply
+RequestBody = Hello | SetLogLevel
+ReplyBody = HelloReply | SetLogLevelReply
 
-_REQUESTS: dict[int, type[RequestBody]] = {cls.TYPE: cls for cls in (Hello,)}
-_REPLIES: dict[int, type[ReplyBody]] = {cls.TYPE: cls for cls in (HelloReply,)}
+_REQUESTS: dict[int, type[RequestBody]] = {cls.TYPE: cls for cls in (Hello, SetLogLevel)}
+_REPLIES: dict[int, type[ReplyBody]] = {cls.TYPE: cls for cls in (HelloReply, SetLogLevelReply)}
+_EVENTS: dict[int, type[LogEvent]] = {cls.TYPE: cls for cls in (LogEvent,)}
 
 
 @dataclass(frozen=True)
@@ -237,7 +316,7 @@ class UnknownEvent:
     body: bytes
 
 
-Message = Request | OkResponse | ErrorResponse | UnknownEvent
+Message = Request | OkResponse | ErrorResponse | LogEvent | UnknownEvent
 
 
 def encode(message: Message) -> bytes:
@@ -257,6 +336,9 @@ def encode(message: Message) -> bytes:
             w.u32(request_id)
             w.u8(code)
             w.text(detail)
+        case LogEvent():
+            w.u8(message.TYPE)
+            message.encode(w)
         case UnknownEvent(type_, body):
             w.u8(type_)
             w.raw(body)
@@ -267,10 +349,12 @@ def decode(payload: bytes) -> Message:
     """Decodes one payload. Raises `DecodeError` if it breaks its byte table."""
     r = _Reader(payload)
     type_ = r.u8()
-    if _FIRST_EVENT_TYPE <= type_ < _RESPONSE_BIT:
-        return UnknownEvent(type_, payload[1:])
-    request_id = r.u32()
     message: Message
+    if _FIRST_EVENT_TYPE <= type_ < _RESPONSE_BIT:
+        if not (event := _EVENTS.get(type_)):
+            return UnknownEvent(type_, payload[1:])
+        return event.decode(r)
+    request_id = r.u32()
     if type_ & _RESPONSE_BIT:
         request_type = type_ & ~_RESPONSE_BIT
         status = r.u8()

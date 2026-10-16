@@ -10,16 +10,21 @@ from itch._wire import (
     ErrorResponse,
     Hello,
     HelloReply,
+    LogEvent,
     Message,
     OkResponse,
     Request,
     RequestType,
+    SetLogLevel,
+    SetLogLevelReply,
+    UnknownEvent,
     decode,
     encode,
 )
 
-REQUESTS: dict[str, type[Any]] = {"Hello": Hello}
-REPLIES: dict[str, type[Any]] = {"Hello": HelloReply}
+REQUESTS: dict[str, type[Any]] = {"Hello": Hello, "SetLogLevel": SetLogLevel}
+REPLIES: dict[str, type[Any]] = {"Hello": HelloReply, "SetLogLevel": SetLogLevelReply}
+EVENTS: dict[str, type[Any]] = {"Log": LogEvent}
 
 
 def body(cls: type[Any], fields: dict[str, Any]) -> Any:
@@ -36,6 +41,8 @@ def body(cls: type[Any], fields: dict[str, Any]) -> Any:
 def message(case: dict[str, Any]) -> Message:
     fields = dict(case)
     kind, type_ = fields.pop("kind"), fields.pop("type")
+    if kind == "event":
+        return body(EVENTS[type_], fields)
     request_id = fields.pop("request_id")
     if kind == "request":
         return Request(request_id, body(REQUESTS[type_], fields))
@@ -54,7 +61,7 @@ def test_messages_match_vectors(vectors: dict[str, Any]) -> None:
 
 def test_every_message_type_has_a_vector(vectors: dict[str, Any]) -> None:
     covered = {case["message"]["type"] for case in vectors["messages"]}
-    assert covered == {t.name for t in RequestType}
+    assert covered == {t.name for t in RequestType} | EVENTS.keys()
 
 
 # The Hello reply from messages.md, one field per entry.
@@ -89,6 +96,10 @@ def hello_ok(**fields: str) -> bytes:
         pytest.param(bytes.fromhex("3f 78 56 34 12"), id="unknown request type"),
         pytest.param(bytes.fromhex("bf 78 56 34 12 00"), id="ok reply to an unknown type"),
         pytest.param(b"", id="empty"),
+        pytest.param(bytes.fromhex("07 78 56 34 12 05"), id="log level above debug"),
+        pytest.param(bytes.fromhex("40 00 00 00 00 00 61"), id="log event at level off"),
+        pytest.param(bytes.fromhex("40 02 00 00 00"), id="short log event"),
+        pytest.param(bytes.fromhex("40 02 00 00 00 00 c3 28"), id="log text invalid UTF-8"),
     ],
 )
 def test_rejects_malformed_payloads(payload: bytes) -> None:
@@ -99,3 +110,7 @@ def test_rejects_malformed_payloads(payload: bytes) -> None:
 def test_error_response_keeps_an_unknown_code() -> None:
     reply = decode(bytes.fromhex("81 78 56 34 12 63 00"))
     assert reply == ErrorResponse(RequestType.Hello, 0x12345678, 99, "")
+
+
+def test_other_events_decode_as_unknown() -> None:
+    assert decode(bytes.fromhex("41 01 02")) == UnknownEvent(0x41, b"\x01\x02")
