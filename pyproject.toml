@@ -36,3 +36,5 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT"]
 include = ["src", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
+# Tests mark deliberate type errors with `# pyright: ignore[...]`; this fails if one goes unflagged.
+reportUnnecessaryTypeIgnoreComment = "error"

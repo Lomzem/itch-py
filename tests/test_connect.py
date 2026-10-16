@@ -6,7 +6,7 @@ import socket
 import warnings
 
 import pytest
-from scripted_rig import ScriptedRig
+from scripted_rig import ACME_HELLO, ScriptedRig
 
 from itch import DevelopmentBuildWarning, ItchError, ProtocolMismatchError, Rig
 from itch._wire import (
@@ -17,17 +17,6 @@ from itch._wire import (
     OkResponse,
     Request,
     UnknownEvent,
-)
-
-ACME_HELLO = HelloReply(
-    protocol=1,
-    firmware_version="1.0.0",
-    dirty=False,
-    features=0,
-    channel_count=16,
-    board_revision="A",
-    hardware_id=bytes.fromhex("60 55 f9 c0 27 18"),
-    label="bench3",
 )
 
 

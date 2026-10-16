@@ -5,21 +5,49 @@ from typing import Any, get_type_hints
 import pytest
 
 from itch._wire import (
+    AcquireLease,
+    AcquireLeaseReply,
+    Clear,
+    ClearReply,
     DecodeError,
     ErrorCode,
     ErrorResponse,
+    GetChannels,
+    GetChannelsReply,
     Hello,
     HelloReply,
     Message,
     OkResponse,
+    ReleaseLease,
+    ReleaseLeaseReply,
+    RenewLease,
+    RenewLeaseReply,
     Request,
     RequestType,
+    WriteChannels,
+    WriteChannelsReply,
     decode,
     encode,
 )
 
-REQUESTS: dict[str, type[Any]] = {"Hello": Hello}
-REPLIES: dict[str, type[Any]] = {"Hello": HelloReply}
+REQUESTS: dict[str, type[Any]] = {
+    "Hello": Hello,
+    "GetChannels": GetChannels,
+    "WriteChannels": WriteChannels,
+    "Clear": Clear,
+    "AcquireLease": AcquireLease,
+    "RenewLease": RenewLease,
+    "ReleaseLease": ReleaseLease,
+}
+REPLIES: dict[str, type[Any]] = {
+    "Hello": HelloReply,
+    "GetChannels": GetChannelsReply,
+    "WriteChannels": WriteChannelsReply,
+    "Clear": ClearReply,
+    "AcquireLease": AcquireLeaseReply,
+    "RenewLease": RenewLeaseReply,
+    "ReleaseLease": ReleaseLeaseReply,
+}
 
 
 def body(cls: type[Any], fields: dict[str, Any]) -> Any:

@@ -12,7 +12,19 @@ from collections.abc import Callable, Iterable
 from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
-from itch._wire import Message, Request, decode, encode
+from itch._wire import HelloReply, Message, Request, decode, encode
+
+ACME_HELLO = HelloReply(
+    protocol=1,
+    firmware_version="1.0.0",
+    dirty=False,
+    features=0,
+    channel_count=16,
+    board_revision="A",
+    hardware_id=bytes.fromhex("60 55 f9 c0 27 18"),
+    label="bench3",
+)
+"""The `Hello` reply of a made-up Rig labelled `bench3`."""
 
 
 class ScriptedRig:

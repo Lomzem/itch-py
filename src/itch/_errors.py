@@ -16,3 +16,16 @@ class ProtocolMismatchError(ItchError):
 
 class DevelopmentBuildWarning(UserWarning):
     """The Rig runs a development build: WiFi enabled, or built from uncommitted code."""
+
+
+class LeaseError(ItchError):
+    """A problem with the Lease that lets a script change a Rig's Channels."""
+
+
+class LeaseRequiredError(LeaseError):
+    """A write outside a Session."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Changing Channels needs a session: wrap the writes in `with rig.session():`."
+        )

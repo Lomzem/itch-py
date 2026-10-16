@@ -35,6 +35,12 @@ class RequestType(IntEnum):
     """The `type` byte of a request; its response's is `type | 0x80`."""
 
     Hello = 0x01
+    GetChannels = 0x02
+    WriteChannels = 0x03
+    Clear = 0x04
+    AcquireLease = 0x08
+    RenewLease = 0x09
+    ReleaseLease = 0x0A
 
 
 class ErrorCode(IntEnum):
@@ -198,13 +204,219 @@ class HelloReply:
         )
 
 
+# --- Channels ----------------------------------------------------------------------------------
+# A Channel state is a `u16`, bit 0 = CH1, with a set bit meaning on.
+
+
+@dataclass(frozen=True)
+class GetChannels:
+    TYPE: ClassVar[RequestType] = RequestType.GetChannels
+
+    def encode(self, w: _Writer) -> None:
+        pass
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls()
+
+
+@dataclass(frozen=True)
+class GetChannelsReply:
+    TYPE: ClassVar[RequestType] = RequestType.GetChannels
+
+    state: int
+    """The commanded state."""
+
+    def encode(self, w: _Writer) -> None:
+        w.u16(self.state)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(state=r.u16())
+
+
+@dataclass(frozen=True)
+class WriteChannels:
+    """A Mask write: Channels whose `mask` bit is set take their `values` bit."""
+
+    TYPE: ClassVar[RequestType] = RequestType.WriteChannels
+
+    token: int
+    mask: int
+    values: int
+
+    def encode(self, w: _Writer) -> None:
+        w.u64(self.token)
+        w.u16(self.mask)
+        w.u16(self.values)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(token=r.u64(), mask=r.u16(), values=r.u16())
+
+
+@dataclass(frozen=True)
+class WriteChannelsReply:
+    TYPE: ClassVar[RequestType] = RequestType.WriteChannels
+
+    state: int
+    """The state after settling."""
+
+    def encode(self, w: _Writer) -> None:
+        w.u16(self.state)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(state=r.u16())
+
+
+@dataclass(frozen=True)
+class Clear:
+    TYPE: ClassVar[RequestType] = RequestType.Clear
+
+    token: int
+
+    def encode(self, w: _Writer) -> None:
+        w.u64(self.token)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(token=r.u64())
+
+
+@dataclass(frozen=True)
+class ClearReply:
+    TYPE: ClassVar[RequestType] = RequestType.Clear
+
+    state: int
+    """The state after settling."""
+
+    def encode(self, w: _Writer) -> None:
+        w.u16(self.state)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(state=r.u16())
+
+
+# --- Lease -------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AcquireLease:
+    TYPE: ClassVar[RequestType] = RequestType.AcquireLease
+
+    token: int
+    takeover: bool
+    holder: str
+
+    def encode(self, w: _Writer) -> None:
+        w.u64(self.token)
+        w.bool(self.takeover)
+        w.text(self.holder, MAX_LABEL)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(token=r.u64(), takeover=r.bool(), holder=r.text(MAX_LABEL))
+
+
+@dataclass(frozen=True)
+class AcquireLeaseReply:
+    TYPE: ClassVar[RequestType] = RequestType.AcquireLease
+
+    ttl_ms: int
+
+    def encode(self, w: _Writer) -> None:
+        w.u32(self.ttl_ms)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(ttl_ms=r.u32())
+
+
+@dataclass(frozen=True)
+class RenewLease:
+    TYPE: ClassVar[RequestType] = RequestType.RenewLease
+
+    token: int
+    holder: str
+
+    def encode(self, w: _Writer) -> None:
+        w.u64(self.token)
+        w.text(self.holder, MAX_LABEL)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(token=r.u64(), holder=r.text(MAX_LABEL))
+
+
+@dataclass(frozen=True)
+class RenewLeaseReply:
+    TYPE: ClassVar[RequestType] = RequestType.RenewLease
+
+    def encode(self, w: _Writer) -> None:
+        pass
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls()
+
+
+@dataclass(frozen=True)
+class ReleaseLease:
+    TYPE: ClassVar[RequestType] = RequestType.ReleaseLease
+
+    token: int
+
+    def encode(self, w: _Writer) -> None:
+        w.u64(self.token)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(token=r.u64())
+
+
+@dataclass(frozen=True)
+class ReleaseLeaseReply:
+    TYPE: ClassVar[RequestType] = RequestType.ReleaseLease
+
+    def encode(self, w: _Writer) -> None:
+        pass
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls()
+
+
 # --- Envelope ----------------------------------------------------------------------------------
 
-RequestBody = Hello
-ReplyBody = HelloReply
+RequestBody = Hello | GetChannels | WriteChannels | Clear | AcquireLease | RenewLease | ReleaseLease
+ReplyBody = (
+    HelloReply
+    | GetChannelsReply
+    | WriteChannelsReply
+    | ClearReply
+    | AcquireLeaseReply
+    | RenewLeaseReply
+    | ReleaseLeaseReply
+)
 
-_REQUESTS: dict[int, type[RequestBody]] = {cls.TYPE: cls for cls in (Hello,)}
-_REPLIES: dict[int, type[ReplyBody]] = {cls.TYPE: cls for cls in (HelloReply,)}
+_REQUESTS: dict[int, type[RequestBody]] = {
+    cls.TYPE: cls
+    for cls in (Hello, GetChannels, WriteChannels, Clear, AcquireLease, RenewLease, ReleaseLease)
+}
+_REPLIES: dict[int, type[ReplyBody]] = {
+    cls.TYPE: cls
+    for cls in (
+        HelloReply,
+        GetChannelsReply,
+        WriteChannelsReply,
+        ClearReply,
+        AcquireLeaseReply,
+        RenewLeaseReply,
+        ReleaseLeaseReply,
+    )
+}
 
 
 @dataclass(frozen=True)
