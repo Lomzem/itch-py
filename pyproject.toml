@@ -1,0 +1,38 @@
+[project]
+name = "itch"
+description = "Drive an itch Rig's Channels from Python."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pyserial>=3.5", "typing_extensions"]
+dynamic = ["version"]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/itch"]
+
+[dependency-groups]
+dev = ["pyright", "pytest", "ruff"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["prototypes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"

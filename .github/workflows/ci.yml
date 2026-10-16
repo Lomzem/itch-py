@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # The itch commit whose itch-sim and vectors the tests run against.
+  ITCH_REF: itch-v1
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+        python: ["3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run pyright
+
+      - uses: actions/checkout@v7
+        with:
+          repository: Lomzem/itch
+          ref: ${{ env.ITCH_REF }}
+          path: itch
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - run: cargo build -p itch-sim --manifest-path itch/Cargo.toml
+      - run: uv run pytest
+        env:
+          ITCH_REPO: ${{ github.workspace }}/itch
