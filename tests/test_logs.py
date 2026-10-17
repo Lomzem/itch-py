@@ -48,6 +48,15 @@ def test_forwards_rig_logs_to_python_logging(sim: str, caplog: pytest.LogCapture
     assert record.message.startswith(f"Rig {rig.label}: "), record.message
 
 
+def test_forwards_rig_logs_still_unread_when_the_rig_closes(
+    sim: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="itch.rig")
+    with Rig.connect(sim, log_level=logging.INFO):
+        Rig.connect(sim).close()
+    assert any("connected" in r.message for r in caplog.records), caplog.records
+
+
 def test_forwards_nothing_by_default(sim: str, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="itch.rig")
     with Rig.connect(sim) as rig:
@@ -70,3 +79,9 @@ def test_reports_dropped_rig_logs_and_ignores_logs_from_before_the_level_is_set(
         (logging.WARNING, "Rig bench3 dropped 3 log messages"),
         (logging.WARNING, "Rig bench3: expander fault"),
     ]
+
+
+def test_closing_twice_with_rig_logs_on_is_safe(sim: str) -> None:
+    rig = Rig.connect(sim, log_level=logging.DEBUG)
+    rig.close()
+    rig.close()

@@ -24,6 +24,9 @@ from itch._transport import Disconnected, Transport, open_transport
 REQUEST_TIMEOUT = 2.0
 """Seconds to wait for each reply."""
 
+_LOG_DRAIN_TIMEOUT = 0.05
+"""Seconds `close()` waits for Log Events still on their way."""
+
 CHANNELS = range(1, 17)
 """The Channel numbers, CH1 to CH16 as on the board."""
 
@@ -92,7 +95,8 @@ class Rig:
 
         The Rig's own log messages are off unless you pass `log_level`, such as
         `logging.INFO`. Those at that level and above then go to the `itch.rig` logger
-        whenever itch-py hears from the Rig. Configure Python `logging` to see them.
+        whenever itch-py hears from the Rig, and when it closes. Configure Python `logging`
+        to see them.
         """
         rig = cls(open_transport(name), log_level=log_level)
         if notes := rig._dev_build_notes:
@@ -179,6 +183,10 @@ class Rig:
         if self._lease is not None:
             with contextlib.suppress(ItchError):
                 self._release(self._lease)
+        if self._log_level:
+            with self._lock, contextlib.suppress(Disconnected, _wire.DecodeError):
+                self._forward_pending_logs()
+            self._log_level = 0
         self._transport.close()
 
     def __enter__(self) -> Self:
@@ -228,6 +236,16 @@ class Rig:
         if self._lease is lease:
             self._lease = None
         self._request(_wire.ReleaseLease(lease.token), _wire.ReleaseLeaseReply)
+
+    def _forward_pending_logs(self) -> None:
+        """Forwards the Log Events that arrived after the last reply."""
+        deadline = time.monotonic() + _LOG_DRAIN_TIMEOUT
+        while (remaining := deadline - time.monotonic()) > 0:
+            payload = self._transport.receive(remaining)
+            if payload is None:
+                return
+            if isinstance(message := _wire.decode(payload), _wire.LogEvent):
+                self._forward_log(message)
 
     def _request(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
         """Sends one request and waits for its reply."""
