@@ -17,6 +17,7 @@ from itch._errors import (
     ItchError,
     LeaseRequiredError,
     ProtocolMismatchError,
+    rig_error,
 )
 from itch._status import Status
 from itch._transport import Disconnected, Transport, open_transport
@@ -223,7 +224,7 @@ class Rig:
                 ):
                     continue  # Not a reply, or a reply to an earlier request.
                 if isinstance(message, _wire.ErrorResponse):
-                    raise ItchError(f"Rig {self._name} refused {body.TYPE.name}: {message.detail}")
+                    raise rig_error(self._name, body.TYPE.name, message.code, message.detail)
                 if not isinstance(message.body, reply):
                     raise _wire.DecodeError(f"{type(message.body).__name__} answers {body}")
                 return message.body
