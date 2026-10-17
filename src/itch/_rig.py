@@ -196,6 +196,19 @@ class Rig:
         state = self._request(_wire.GetChannels(), _wire.GetChannelsReply).state
         return {channel: "on" if state & bit else "off" for channel, bit in wanted.items()}
 
+    def set_label(self, label: str) -> None:
+        """Renames the Rig, at most 64 bytes of UTF-8. Needs a session.
+
+        The Rig keeps the label across reboots. An empty label restores the default, such as
+        `itch-C02718`. Raises `StorageFaultError` if the Rig couldn't save it.
+        """
+        if (size := len(label.encode())) > _wire.MAX_LABEL:
+            raise ValueError(
+                f"The label {label!r} is {size} bytes, but at most {_wire.MAX_LABEL} bytes fit."
+            )
+        reply = self._request(_wire.SetLabel(self._token(), label), _wire.SetLabelReply)
+        self._label = self._name = reply.label
+
     def status(self) -> Status:
         """Returns the Rig's uptime, reset reason, last panic, Holder and fault counters."""
         return from_reply(self._request(_wire.GetStatus(), _wire.GetStatusReply))

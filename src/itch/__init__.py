@@ -14,6 +14,7 @@ from itch._errors import (
     ProfileError,
     ProtocolMismatchError,
     RigNotFoundError,
+    StorageFaultError,
 )
 from itch._rig import Rig, Session
 from itch._status import Status
@@ -35,4 +36,5 @@ __all__ = [
     "RigNotFoundError",
     "Session",
     "Status",
+    "StorageFaultError",
 ]

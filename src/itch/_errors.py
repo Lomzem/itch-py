@@ -75,6 +75,14 @@ class DisconnectedError(ItchError):
         super().__init__("Rig disconnected; run the script again.")
 
 
+class StorageFaultError(ItchError):
+    """The Rig couldn't save a setting, such as its label, to its flash."""
+
+    def __init__(self, rig: str, detail: str = "") -> None:
+        message = f"Rig {rig} couldn't save the setting to its flash; tell the dev."
+        super().__init__(f"{message} ({detail})" if detail else message)
+
+
 class RigNotFoundError(ItchError):
     """No Rig matches the name given to `Rig.connect()`."""
 
@@ -117,7 +125,7 @@ def rig_error(rig: str, request: str, code: int, detail: str) -> ItchError:
                 "The Rig, not the DUT, is broken; tell the dev."
             )
         case ErrorCode.StorageFault:
-            message = f"Rig {rig} couldn't save the setting to its flash; tell the dev."
+            return StorageFaultError(rig, detail)
         case ErrorCode.Internal:
             message = f"Rig {rig} hit an internal error answering {request}; tell the dev."
         case _:

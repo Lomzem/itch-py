@@ -4,7 +4,14 @@ import pytest
 from scripted_rig import ScriptedRig, after_connecting
 
 import itch
-from itch import ItchError, LeaseHeldError, LeaseLostError, LeaseRequiredError, Rig
+from itch import (
+    ItchError,
+    LeaseHeldError,
+    LeaseLostError,
+    LeaseRequiredError,
+    Rig,
+    StorageFaultError,
+)
 from itch._wire import ErrorCode, ErrorResponse
 
 # What each code raises, and a phrase its message must hold.
@@ -17,12 +24,12 @@ RAISES: dict[ErrorCode, tuple[type[ItchError], str]] = {
     ErrorCode.LeaseLost: (LeaseLostError, "taken over by"),
     ErrorCode.Busy: (ItchError, "busy"),
     ErrorCode.HardwareFault: (ItchError, "not the DUT"),
-    ErrorCode.StorageFault: (ItchError, "couldn't save"),
+    ErrorCode.StorageFault: (StorageFaultError, "couldn't save"),
     ErrorCode.Internal: (ItchError, "internal error"),
 }
 
-ON_THE_SIM = {ErrorCode.LeaseHeld, ErrorCode.LeaseLost}
-"""Codes two clients provoke on the real sim, in `test_session.py`."""
+ON_THE_SIM = {ErrorCode.LeaseHeld, ErrorCode.LeaseLost, ErrorCode.StorageFault}
+"""Codes provoked on the real sim, in `test_session.py` and `test_labels.py`."""
 
 
 def refusing(code: int, detail: str = "") -> ScriptedRig:
