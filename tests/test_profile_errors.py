@@ -154,3 +154,31 @@ def test_a_mistake_raises_a_plain_profile_error(channels: Any, values: Any, mess
 
 def test_a_profile_error_is_an_itch_error() -> None:
     assert issubclass(ProfileError, ItchError)
+
+
+def test_a_value_name_listed_twice_is_caught() -> None:
+    def define_with_a_repeated_name() -> type[Profile]:
+        class Widget(Profile):
+            mode = field(
+                channels=[4, 5],
+                values={
+                    "cinema": ["off", "off"],
+                    "night": ["on", "off"],
+                    "cinema": ["on", "on"],  # noqa: F601
+                },
+            )
+
+        return Widget
+
+    message = (
+        'Widget.mode: the Value "cinema" is listed twice, and Python keeps only the last one. '
+        "Give each Value its own name, or make one an alias."
+    )
+    with pytest.raises(ProfileError, match=f"^{re.escape(message)}$"):
+        define_with_a_repeated_name()
+
+
+def test_a_profile_without_source_code_still_loads() -> None:
+    namespace: dict[str, Any] = {"Profile": Profile, "field": field}
+    exec('class Widget(Profile):\n    mode = field([4], {"cinema": ["off"]})', namespace)
+    assert namespace["Widget"].mode.name == "mode"

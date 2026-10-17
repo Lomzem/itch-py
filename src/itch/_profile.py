@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import ast
 import difflib
+import inspect
+import textwrap
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Any, Generic, LiteralString, Never, NoReturn, TypeVar, cast, overload
@@ -314,6 +317,7 @@ class Profile:
 
     def __init_subclass__(cls) -> None:
         cls._fields = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
+        _check_repeated_values(cls)
         for f in cls._fields.values():
             f._check()
 
@@ -369,6 +373,43 @@ class Profile:
             self._batch[field] = bits
         else:
             self._rig._write_channels(field._mask, bits)
+
+
+def _check_repeated_values(cls: type[Profile]) -> None:
+    """Raises `ProfileError` for a Value name listed twice in one Field.
+
+    Python keeps only the last of two equal dict keys, so this reads the Profile's source.
+    A Profile with no source file, typed into a REPL say, isn't checked.
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(cls)))
+    except (OSError, TypeError, SyntaxError):
+        return
+    body = tree.body[0].body if tree.body and isinstance(tree.body[0], ast.ClassDef) else []
+    for statement in body:
+        if not (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(name := statement.targets[0], ast.Name)
+            and name.id in cls._fields
+            and isinstance(call := statement.value, ast.Call)
+        ):
+            continue
+        values = next((k.value for k in call.keywords if k.arg == "values"), None)
+        if values is None and len(call.args) > 1:
+            values = call.args[1]
+        if not isinstance(values, ast.Dict):
+            continue
+        seen: set[str] = set()
+        for key in values.keys:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                if key.value in seen:
+                    raise ProfileError(
+                        f'{cls._fields[name.id]._where}: the Value "{key.value}" is listed twice, '
+                        "and Python keeps only the last one. Give each Value its own name, or "
+                        "make one an alias."
+                    )
+                seen.add(key.value)
 
 
 def _show(positions: Sequence[str]) -> str:
