@@ -15,10 +15,14 @@ from typing import Literal, Self, TypeVar
 from itch import _wire
 from itch._errors import (
     DevelopmentBuildWarning,
+    DisconnectedError,
     ItchError,
     LeaseRequiredError,
+    NotRespondingError,
     ProtocolMismatchError,
+    rig_error,
 )
+from itch._status import Status, from_reply
 from itch._transport import Disconnected, Transport, open_transport
 
 REQUEST_TIMEOUT = 2.0
@@ -175,6 +179,10 @@ class Rig:
         state = self._request(_wire.GetChannels(), _wire.GetChannelsReply).state
         return {channel: "on" if state & bit else "off" for channel, bit in wanted.items()}
 
+    def status(self) -> Status:
+        """Returns the Rig's uptime, reset reason, last panic, Holder and fault counters."""
+        return from_reply(self._request(_wire.GetStatus(), _wire.GetStatusReply))
+
     def close(self) -> None:
         """Closes the connection, freeing the Rig for the next script. Safe to call twice.
 
@@ -253,33 +261,41 @@ class Rig:
             return self._exchange(body, reply)
 
     def _exchange(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
-        request_id = next(self._request_ids) & 0xFFFF_FFFF
+        """Sends `body`, and once more with a fresh `request_id` if the Rig stays silent."""
         try:
-            self._transport.send(_wire.encode(_wire.Request(request_id, body)))
-            deadline = time.monotonic() + REQUEST_TIMEOUT
-            while (remaining := deadline - time.monotonic()) > 0:
-                payload = self._transport.receive(remaining)
-                if payload is None:
-                    break
-                message = _wire.decode(payload)
-                if isinstance(message, _wire.LogEvent):
-                    self._forward_log(message)
-                    continue
-                if (
-                    not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
-                    or message.request_id != request_id
-                ):
-                    continue  # Not a reply, or a reply to an earlier request.
-                if isinstance(message, _wire.ErrorResponse):
-                    raise ItchError(f"Rig {self._name} refused {body.TYPE.name}: {message.detail}")
-                if not isinstance(message.body, reply):
-                    raise _wire.DecodeError(f"{type(message.body).__name__} answers {body}")
-                return message.body
+            for _ in range(2):
+                if (answer := self._attempt(body, reply)) is not None:
+                    return answer
         except Disconnected as err:
-            raise ItchError("Rig disconnected; run the script again.") from err
+            raise DisconnectedError from err
         except _wire.DecodeError as err:
             raise ItchError(f"Rig {self._name} sent a malformed reply: {err}") from err
-        raise ItchError(f"Rig {self._name} isn't responding.")
+        raise NotRespondingError(self._name)
+
+    def _attempt(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply | None:
+        """Sends `body` once and returns its reply, or `None` after `REQUEST_TIMEOUT`."""
+        request_id = next(self._request_ids) & 0xFFFF_FFFF
+        self._transport.send(_wire.encode(_wire.Request(request_id, body)))
+        deadline = time.monotonic() + REQUEST_TIMEOUT
+        while (remaining := deadline - time.monotonic()) > 0:
+            payload = self._transport.receive(remaining)
+            if payload is None:
+                break
+            message = _wire.decode(payload)
+            if isinstance(message, _wire.LogEvent):
+                self._forward_log(message)
+                continue
+            if (
+                not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
+                or message.request_id != request_id
+            ):
+                continue  # Not a reply, or a reply to an earlier request.
+            if isinstance(message, _wire.ErrorResponse):
+                raise rig_error(self._name, body.TYPE.name, message.code, message.detail)
+            if not isinstance(message.body, reply):
+                raise _wire.DecodeError(f"{type(message.body).__name__} answers {body}")
+            return message.body
+        return None
 
 
 class Session:

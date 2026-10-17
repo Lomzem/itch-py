@@ -23,6 +23,9 @@ PROTOCOL = 1
 MAX_LABEL = 64
 """The longest Label or Holder text, in bytes."""
 
+MAX_LAST_PANIC = 64
+"""The longest `last_panic` text, in bytes."""
+
 FEATURE_WIFI = 1 << 0
 """`Hello` `features` bit: the firmware was built with the `wifi` feature."""
 
@@ -45,6 +48,7 @@ class RequestType(IntEnum):
     GetChannels = 0x02
     WriteChannels = 0x03
     Clear = 0x04
+    GetStatus = 0x05
     SetLogLevel = 0x07
     AcquireLease = 0x08
     RenewLease = 0x09
@@ -311,6 +315,67 @@ class ClearReply:
         return cls(state=r.u16())
 
 
+# --- Status ----------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GetStatus:
+    TYPE: ClassVar[RequestType] = RequestType.GetStatus
+
+    def encode(self, w: _Writer) -> None:
+        pass
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls()
+
+
+@dataclass(frozen=True)
+class GetStatusReply:
+    TYPE: ClassVar[RequestType] = RequestType.GetStatus
+
+    uptime_ms: int
+    reset_reason: int
+    """The raw ESP32-S3 `SocResetReason`, or 0 if unknown."""
+    last_panic: str
+    """Empty = no panic."""
+    holder: str
+    """Empty = no Holder."""
+    crc_failures: int
+    oversized_frames: int
+    malformed_frames: int
+    dropped_logs: int
+    expander_faults: int
+    usb_tx_dropped: int
+
+    def encode(self, w: _Writer) -> None:
+        w.u64(self.uptime_ms)
+        w.u8(self.reset_reason)
+        w.text(self.last_panic, MAX_LAST_PANIC)
+        w.text(self.holder, MAX_LABEL)
+        w.u32(self.crc_failures)
+        w.u32(self.oversized_frames)
+        w.u32(self.malformed_frames)
+        w.u32(self.dropped_logs)
+        w.u32(self.expander_faults)
+        w.u32(self.usb_tx_dropped)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(
+            uptime_ms=r.u64(),
+            reset_reason=r.u8(),
+            last_panic=r.text(MAX_LAST_PANIC),
+            holder=r.text(MAX_LABEL),
+            crc_failures=r.u32(),
+            oversized_frames=r.u32(),
+            malformed_frames=r.u32(),
+            dropped_logs=r.u32(),
+            expander_faults=r.u32(),
+            usb_tx_dropped=r.u32(),
+        )
+
+
 # --- SetLogLevel and the Log Event ------------------------------------------------------------
 
 
@@ -473,6 +538,7 @@ RequestBody = (
     | GetChannels
     | WriteChannels
     | Clear
+    | GetStatus
     | SetLogLevel
     | AcquireLease
     | RenewLease
@@ -483,6 +549,7 @@ ReplyBody = (
     | GetChannelsReply
     | WriteChannelsReply
     | ClearReply
+    | GetStatusReply
     | SetLogLevelReply
     | AcquireLeaseReply
     | RenewLeaseReply
@@ -496,6 +563,7 @@ _REQUESTS: dict[int, type[RequestBody]] = {
         GetChannels,
         WriteChannels,
         Clear,
+        GetStatus,
         SetLogLevel,
         AcquireLease,
         RenewLease,
@@ -509,6 +577,7 @@ _REPLIES: dict[int, type[ReplyBody]] = {
         GetChannelsReply,
         WriteChannelsReply,
         ClearReply,
+        GetStatusReply,
         SetLogLevelReply,
         AcquireLeaseReply,
         RenewLeaseReply,

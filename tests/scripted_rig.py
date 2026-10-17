@@ -13,6 +13,7 @@ from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
+    Hello,
     HelloReply,
     Message,
     OkResponse,
@@ -84,3 +85,16 @@ def answering(hello: HelloReply, *before: Message) -> ScriptedRig:
         return [*before, OkResponse(request.request_id, reply)]
 
     return ScriptedRig(answer)
+
+
+def after_connecting(answer: Callable[[Request], Iterable[Message]]) -> ScriptedRig:
+    """A peer that answers `Hello` (as `bench3`) and `SetLogLevel`, and the rest with `answer`."""
+
+    def answer_all(request: Request) -> Iterable[Message]:
+        if isinstance(request.body, Hello):
+            return [OkResponse(request.request_id, ACME_HELLO)]
+        if isinstance(request.body, SetLogLevel):
+            return [OkResponse(request.request_id, SetLogLevelReply())]
+        return answer(request)
+
+    return ScriptedRig(answer_all)
