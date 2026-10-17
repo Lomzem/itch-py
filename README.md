@@ -60,15 +60,24 @@ from itch import Profile, alias, field
 
 
 class AcmeWidget(Profile):
-    resolution = field(channels=[1, 2], values={
-        "720p": ["on", "off"],
-        "1080p": ["off", "on"],
-    })
-    mode = field(channels=[4, 5, 6], values={
-        "cinema": ["off", "off", "off"],
-        "night": [["on", "off", "off"], ["on", "off", "on"]],  # two Encodings; the first is the default
-        "movie": alias("cinema"),  # another name for "cinema"
-    })
+    resolution = field(
+        channels=[1, 2],
+        values={
+            "720p": ["on", "off"],
+            "1080p": ["off", "on"],
+        },
+    )
+    mode = field(
+        channels=[4, 5, 6],
+        values={
+            "cinema": ["off", "off", "off"],
+            "night": [
+                ["on", "off", "off"],
+                ["on", "off", "on"],
+            ],  # two Encodings; the first is the default
+            "movie": alias("cinema"),  # another name for "cinema"
+        },
+    )
 ```
 
 Then drive the DUT through it. In VS Code, the Values autocomplete inside `set("…")`, and a misspelt one is underlined once type checking is on (`"python.analysis.typeCheckingMode": "basic"`):

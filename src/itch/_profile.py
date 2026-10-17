@@ -58,6 +58,11 @@ class Field(Generic[V]):
     def _check(self) -> None:
         """Checks the Field as written and works out its bits. Raises `ProfileError`."""
         where = self._where
+        # Checked as written, since a Profile may have type errors its author didn't see.
+        channels, values = cast(object, self._channels), cast(object, self._values)
+        if not isinstance(channels, list):
+            example = channels if type(channels) is int else "1, 2"
+            raise ProfileError(f"{where}: `channels` should be a list, e.g. channels=[{example}].")
         if not self._channels:
             raise ProfileError(
                 f"{where}: `channels` is empty. List the Channels it uses, e.g. channels=[1, 2]."
@@ -71,6 +76,11 @@ class Field(Generic[V]):
                 raise ProfileError(f"{where}: Channel {channel} is listed twice in `channels`.")
             self._mask |= 1 << (channel - 1)
         example = _show(["on"] * len(self._channels))
+        if not isinstance(values, dict):
+            raise ProfileError(
+                f"{where}: `values` should be a dict of names and positions, "
+                f'e.g. values={{"night": {example}}}.'
+            )
         if not self._values:
             raise ProfileError(
                 f"{where}: `values` is empty. Give each Value a name and its positions, "
@@ -78,7 +88,6 @@ class Field(Generic[V]):
             )
         seen: dict[int, tuple[str, str]] = {}
         """The Value and label of the Encoding already using each pattern of bits."""
-        # Checked as written, since a Profile may have type errors its author didn't see.
         for value, spec in cast(dict[object, object], self._values).items():
             if not isinstance(value, str):
                 raise ProfileError(
@@ -94,9 +103,16 @@ class Field(Generic[V]):
                 self._encodings[value].append(self._check_encoding(value, label, positions, seen))
         for name, target in self._aliases.items():
             if target in self._aliases:
+                final = self._aliases[target]
+                if target != name and final in self._encodings:
+                    instead = f'"{final}" instead'
+                elif self._encodings:
+                    instead = f'a Value, such as "{next(iter(self._encodings))}"'
+                else:
+                    instead = "a Value"
+                points = "itself" if target == name else f'"{target}", which is itself an alias'
                 raise ProfileError(
-                    f'{where}: alias "{name}" points to "{target}", which is itself an alias. '
-                    f'Point it at "{self._aliases[target]}" instead.'
+                    f'{where}: alias "{name}" points to {points}. Point it at {instead}.'
                 )
             if target not in self._encodings:
                 raise ProfileError(

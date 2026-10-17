@@ -32,6 +32,17 @@ def define(channels: Any, values: Any) -> type[Profile]:
             'e.g. "night": ["on", "on"].',
         ),
         (
+            4,
+            {"cinema": ["off"]},
+            "Widget.mode: `channels` should be a list, e.g. channels=[4].",
+        ),
+        (
+            [4],
+            [["off"], ["on"]],
+            'Widget.mode: `values` should be a dict of names and positions, e.g. values={"night": '
+            '["on"]}.',
+        ),
+        (
             [4, 17],
             {"cinema": ["off", "off"]},
             "Widget.mode: Channel 17 doesn't exist. Channels are numbered 1 to 16.",
@@ -122,6 +133,17 @@ def define(channels: Any, values: Any) -> type[Profile]:
             {"cinema": ["off", "off"], "movie": alias("cinema"), "film": alias("movie")},
             'Widget.mode: alias "film" points to "movie", which is itself an alias. '
             'Point it at "cinema" instead.',
+        ),
+        (
+            [4, 5],
+            {"cinema": ["off", "off"], "movie": alias("movie")},
+            'Widget.mode: alias "movie" points to itself. Point it at a Value, such as "cinema".',
+        ),
+        (
+            [4, 5],
+            {"cinema": ["off", "off"], "movie": alias("film"), "film": alias("movie")},
+            'Widget.mode: alias "movie" points to "film", which is itself an alias. '
+            'Point it at a Value, such as "cinema".',
         ),
     ],
 )

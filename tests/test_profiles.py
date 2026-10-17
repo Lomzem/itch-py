@@ -4,8 +4,22 @@ from collections.abc import Mapping
 
 import pytest
 from acme_widget import AcmeWidget
+from scripted_rig import after_connecting
 
 from itch import ItchError, LeaseRequiredError, Rig
+from itch._wire import (
+    AcquireLease,
+    AcquireLeaseReply,
+    Message,
+    OkResponse,
+    ReleaseLease,
+    ReleaseLeaseReply,
+    ReplyBody,
+    Request,
+    RequestBody,
+    WriteChannels,
+    WriteChannelsReply,
+)
 
 ALL_OFF = dict.fromkeys(range(1, 17), "off")
 
@@ -18,6 +32,23 @@ def test_setting_a_field_writes_its_channels_and_leaves_the_rest(rig: Rig) -> No
         dut.resolution.set("1080p")
         assert rig.get_channels() == {**ALL_OFF, 1: "off", 2: "on", 16: "on"}
         assert dut.resolution.get() == "1080p"
+
+
+def test_a_set_is_one_mask_write_over_the_fields_channels() -> None:
+    replies: dict[type[RequestBody], ReplyBody] = {
+        AcquireLease: AcquireLeaseReply(10_000),
+        WriteChannels: WriteChannelsReply(0),
+        ReleaseLease: ReleaseLeaseReply(),
+    }
+
+    def answer(request: Request) -> list[Message]:
+        return [OkResponse(request.request_id, replies[type(request.body)])]
+
+    with after_connecting(answer) as peer, Rig.connect(peer.url) as rig:
+        with rig.session():
+            AcmeWidget(rig).mode.set("night", encoding=2)
+        writes = [r.body for r in peer.requests if isinstance(r.body, WriteChannels)]
+    assert [(w.mask, w.values) for w in writes] == [(0b11_1000, 0b10_1000)]
 
 
 def test_a_value_sets_encoding_1_unless_told_otherwise(rig: Rig) -> None:
