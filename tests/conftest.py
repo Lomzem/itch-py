@@ -75,8 +75,9 @@ def vectors() -> dict[str, Any]:
 class RunningSim:
     """An `itch-sim` process, stopped on exit."""
 
-    def __init__(self) -> None:
-        self._process = subprocess.Popen([_sim_binary()], stdout=subprocess.PIPE, text=True)
+    def __init__(self, *args: str) -> None:
+        """Starts the sim with command-line `args`, such as `--clock-rate 1000`."""
+        self._process = subprocess.Popen([_sim_binary(), *args], stdout=subprocess.PIPE, text=True)
         assert self._process.stdout is not None
         line = self._process.stdout.readline().strip()
         if not line.startswith(READY):
