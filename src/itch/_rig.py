@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import itertools
+import logging
 import secrets
 import threading
 import time
@@ -23,6 +24,9 @@ from itch._transport import Disconnected, Transport, open_transport
 REQUEST_TIMEOUT = 2.0
 """Seconds to wait for each reply."""
 
+_LOG_DRAIN_TIMEOUT = 0.05
+"""Seconds `close()` waits for Log Events still on their way."""
+
 CHANNELS = range(1, 17)
 """The Channel numbers, CH1 to CH16 as on the board."""
 
@@ -30,6 +34,21 @@ Position = Literal["on", "off"]
 """A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
 
 _Reply = TypeVar("_Reply", bound=_wire.ReplyBody)
+
+_RIG_LOGGER = logging.getLogger("itch.rig")
+
+# Python logging levels for Rig log levels 1 error to 4 debug.
+_PYTHON_LEVELS = (logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG)
+
+
+def _rig_log_level(python_level: int | None) -> int:
+    """The quietest Rig log level that still sends everything at `python_level` and above."""
+    if python_level is None:
+        return 0
+    for rig_level in (4, 3, 2):
+        if python_level <= _PYTHON_LEVELS[rig_level - 1]:
+            return rig_level
+    return 1
 
 
 class Rig:
@@ -43,11 +62,12 @@ class Rig:
     ```
     """
 
-    def __init__(self, transport: Transport) -> None:
+    def __init__(self, transport: Transport, *, log_level: int | None = None) -> None:
         """Takes over an open transport and sends `Hello`. Use `Rig.connect()` instead."""
         self._transport = transport
         self._name = transport.name
         self._request_ids = itertools.count(1)
+        self._log_level = 0  # Log Events from before SetLogLevel's reply are a backlog.
         self._lock = threading.Lock()
         """Serialises requests from the script and the Session heartbeat."""
         self._lease: _Lease | None = None
@@ -56,20 +76,29 @@ class Rig:
             hello = self._request(_wire.Hello(), _wire.HelloReply)
             if hello.protocol != _wire.PROTOCOL:
                 raise ProtocolMismatchError(self._name, hello.protocol, _wire.PROTOCOL)
+            self._name = hello.label
+            level = _rig_log_level(log_level)
+            self._request(_wire.SetLogLevel(level), _wire.SetLogLevelReply)
         except BaseException:
             transport.close()
             raise
         self._hello = hello
-        self._name = self._label = hello.label
+        self._label = hello.label
+        self._log_level = level
 
     @classmethod
-    def connect(cls, name: str | None = None) -> Self:
+    def connect(cls, name: str | None = None, *, log_level: int | None = None) -> Self:
         """Connects to a Rig and checks it speaks this itch-py's protocol.
 
         `name` is `tcp://host:port` for `itch-sim` or a dev-build Rig.
         Warns with `DevelopmentBuildWarning` if the Rig runs a development build.
+
+        The Rig's own log messages are off unless you pass `log_level`, such as
+        `logging.INFO`. Those at that level and above then go to the `itch.rig` logger
+        whenever itch-py hears from the Rig, and when it closes. Configure Python `logging`
+        to see them.
         """
-        rig = cls(open_transport(name))
+        rig = cls(open_transport(name), log_level=log_level)
         if notes := rig._dev_build_notes:
             try:
                 warnings.warn(
@@ -154,6 +183,10 @@ class Rig:
         if self._lease is not None:
             with contextlib.suppress(ItchError):
                 self._release(self._lease)
+        if self._log_level:
+            with self._lock, contextlib.suppress(Disconnected, _wire.DecodeError):
+                self._forward_pending_logs()
+            self._log_level = 0
         self._transport.close()
 
     def __enter__(self) -> Self:
@@ -179,6 +212,13 @@ class Rig:
             notes.append("built from uncommitted code")
         return notes
 
+    def _forward_log(self, event: _wire.LogEvent) -> None:
+        if event.level > self._log_level:
+            return
+        if event.dropped:
+            _RIG_LOGGER.warning("Rig %s dropped %d log messages", self._name, event.dropped)
+        _RIG_LOGGER.log(_PYTHON_LEVELS[event.level - 1], "Rig %s: %s", self._name, event.text)
+
     def _token(self) -> int:
         """The Lease token for a write. Raises `LeaseRequiredError` outside a session."""
         if self._lease is None:
@@ -197,6 +237,16 @@ class Rig:
             self._lease = None
         self._request(_wire.ReleaseLease(lease.token), _wire.ReleaseLeaseReply)
 
+    def _forward_pending_logs(self) -> None:
+        """Forwards the Log Events that arrived after the last reply."""
+        deadline = time.monotonic() + _LOG_DRAIN_TIMEOUT
+        while (remaining := deadline - time.monotonic()) > 0:
+            payload = self._transport.receive(remaining)
+            if payload is None:
+                return
+            if isinstance(message := _wire.decode(payload), _wire.LogEvent):
+                self._forward_log(message)
+
     def _request(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
         """Sends one request and waits for its reply."""
         with self._lock:
@@ -212,6 +262,9 @@ class Rig:
                 if payload is None:
                     break
                 message = _wire.decode(payload)
+                if isinstance(message, _wire.LogEvent):
+                    self._forward_log(message)
+                    continue
                 if (
                     not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
                     or message.request_id != request_id

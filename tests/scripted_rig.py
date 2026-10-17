@@ -12,7 +12,16 @@ from collections.abc import Callable, Iterable
 from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
-from itch._wire import HelloReply, Message, Request, decode, encode
+from itch._wire import (
+    HelloReply,
+    Message,
+    OkResponse,
+    Request,
+    SetLogLevel,
+    SetLogLevelReply,
+    decode,
+    encode,
+)
 
 ACME_HELLO = HelloReply(
     protocol=1,
@@ -62,3 +71,16 @@ class ScriptedRig:
                     for reply in self._answer(request):
                         connection.sendall(encode_frame(encode(reply)))
         self.closed.set()
+
+
+def answering(hello: HelloReply, *before: Message) -> ScriptedRig:
+    """A peer that answers `SetLogLevel` and, to anything else, `hello`.
+
+    It sends `before` ahead of every reply.
+    """
+
+    def answer(request: Request) -> list[Message]:
+        reply = SetLogLevelReply() if isinstance(request.body, SetLogLevel) else hello
+        return [*before, OkResponse(request.request_id, reply)]
+
+    return ScriptedRig(answer)
