@@ -178,6 +178,17 @@ def test_a_value_name_listed_twice_is_caught() -> None:
         define_with_a_repeated_name()
 
 
+def test_a_value_name_listed_twice_is_caught_in_an_annotated_field() -> None:
+    def define_with_a_repeated_name() -> type[Profile]:
+        class Widget(Profile):
+            mode: Any = field([4], {"cinema": ["off"], "cinema": ["on"]})  # noqa: F601
+
+        return Widget
+
+    with pytest.raises(ProfileError, match='the Value "cinema" is listed twice'):
+        define_with_a_repeated_name()
+
+
 def test_a_profile_without_source_code_still_loads() -> None:
     namespace: dict[str, Any] = {"Profile": Profile, "field": field}
     exec('class Widget(Profile):\n    mode = field([4], {"cinema": ["off"]})', namespace)

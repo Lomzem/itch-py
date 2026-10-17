@@ -4,7 +4,7 @@ import pytest
 from acme_widget import AcmeWidget
 from scripted_rig import after_connecting
 
-from itch import BatchConflictError, Rig
+from itch import BatchConflictError, Profile, Rig, field
 from itch._wire import (
     AcquireLease,
     AcquireLeaseReply,
@@ -166,3 +166,42 @@ def batch_with_a_typo(dut: AcmeWidget) -> None:
     with dut.batch():
         dut.resolution.set("4k")
         dut.mode.set("nigth")  # pyright: ignore[reportArgumentType]
+
+
+class Overlapping(Profile):
+    left = field(channels=[2], values={"low": ["off"], "high": ["on"]})
+    right = field(channels=[1], values={"low": ["off"], "high": ["on"]})
+    both = field(channels=[1, 2], values={"mixed": ["on", "off"], "up": ["on", "on"]})
+
+
+def test_a_conflict_on_several_channels_names_the_first_and_who_set_it(rig: Rig) -> None:
+    dut = Overlapping(rig)
+    message = (
+        r'^CH1: right="low" needs off, but both="up" needs on\. Set only one of them in a batch, '
+        r"or pick Values that agree\. No Channels were changed\.$"
+    )
+    with rig.session():
+        rig.clear()
+        with pytest.raises(BatchConflictError, match=message):
+            batch_left_right_both(dut)
+        assert rig.get_channels() == ALL_OFF
+
+
+def batch_left_right_both(dut: Overlapping) -> None:
+    with dut.batch():
+        dut.left.set("low")
+        dut.right.set("low")
+        dut.both.set("up")
+
+
+class Inherited(AcmeWidget):
+    hdmi = field(channels=[8], values={"hdmi off": ["off"], "hdmi on": ["on"]})
+
+
+def test_printing_a_dut_shows_inherited_fields_too(rig: Rig) -> None:
+    dut = Inherited(rig)
+    with rig.session():
+        rig.clear()
+        dut.resolution.set("4k")
+    assert str(dut).startswith('Inherited(resolution="4k", picture="black"')
+    assert str(dut).endswith('mode="cinema", hdmi="hdmi off")')

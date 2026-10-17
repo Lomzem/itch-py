@@ -163,9 +163,8 @@ Two Fields may use the same Channel, for example when one switch has two meaning
     picture = field(channels=[3], values={"black": ["off"], "bars": ["on"]})
     tone = field(channels=[3], values={"silent": ["off"], "1khz": ["on"]})
 
-    # CH4 is `refresh`, and also the first switch of `mode`.
+    # CH4 is `refresh`, and also the first switch of `mode` (channels=[4, 5, 6], above).
     refresh = field(channels=[4], values={"60hz": ["off"], "50hz": ["on"]})
-    mode = field(channels=[4, 5, 6], values={...})
 ```
 
 Setting one changes the other: after `dut.picture.set("bars")`, `dut.tone.get()` is `"1khz"`.
@@ -203,10 +202,13 @@ itch._errors.BatchConflictError: CH4: refresh="60hz" needs off, but mode="night"
 If you copy a line and forget to rename it, Python quietly keeps only the last one:
 
 ```python
+    resolution = field(
+        channels=[1, 2],
         values={
             "720p": ["on", "off"],
             "720p": ["off", "on"],  # meant "1080p"
         },
+    )
 ```
 
 itch catches this when the Profile loads (`the Value "720p" is listed twice`). With the Ruff extension, VS Code also underlines it as you type (rule F601). itch can only check a Profile saved in a `.py` file, not one typed into a Python prompt.

@@ -316,10 +316,11 @@ class Profile:
     _fields: dict[str, Field[Any]]
 
     def __init_subclass__(cls) -> None:
-        cls._fields = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
-        _check_repeated_values(cls)
-        for f in cls._fields.values():
+        own: dict[str, Field[Any]] = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
+        _check_repeated_values(cls, own)
+        for f in own.values():
             f._check()
+        cls._fields = {**getattr(super(cls, cls), "_fields", {}), **own}
 
     def __init__(self, rig: Rig) -> None:
         self._rig = rig
@@ -347,11 +348,11 @@ class Profile:
         mask = values = 0
         for field, bits in batch.items():
             if clash := mask & field._mask & (values ^ bits):
-                channel = (clash & -clash).bit_length()
-                other = next(f for f, b in batch.items() if f._mask & clash and (b ^ bits) & clash)
-                needs, other_needs = _position(bits, clash), _position(~bits, clash)
+                bit = clash & -clash
+                other = next(f for f in batch if f._mask & bit)
+                needs, other_needs = _position(bits, bit), _position(~bits, bit)
                 raise BatchConflictError(
-                    f"CH{channel}: {other._label(batch[other])} needs {other_needs}, but "
+                    f"CH{bit.bit_length()}: {other._label(batch[other])} needs {other_needs}, but "
                     f"{field._label(bits)} needs {needs}. Set only one of them in a batch, or pick "
                     "Values that agree. No Channels were changed."
                 )
@@ -375,7 +376,7 @@ class Profile:
             self._rig._write_channels(field._mask, bits)
 
 
-def _check_repeated_values(cls: type[Profile]) -> None:
+def _check_repeated_values(cls: type[Profile], fields: dict[str, Field[Any]]) -> None:
     """Raises `ProfileError` for a Value name listed twice in one Field.
 
     Python keeps only the last of two equal dict keys, so this reads the Profile's source.
@@ -387,11 +388,15 @@ def _check_repeated_values(cls: type[Profile]) -> None:
         return
     body = tree.body[0].body if tree.body and isinstance(tree.body[0], ast.ClassDef) else []
     for statement in body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+        else:
+            continue
         if not (
-            isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(name := statement.targets[0], ast.Name)
-            and name.id in cls._fields
+            isinstance(target, ast.Name)
+            and target.id in fields
             and isinstance(call := statement.value, ast.Call)
         ):
             continue
@@ -405,7 +410,7 @@ def _check_repeated_values(cls: type[Profile]) -> None:
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
                 if key.value in seen:
                     raise ProfileError(
-                        f'{cls._fields[name.id]._where}: the Value "{key.value}" is listed twice, '
+                        f'{fields[target.id]._where}: the Value "{key.value}" is listed twice, '
                         "and Python keeps only the last one. Give each Value its own name, or "
                         "make one an alias."
                     )
