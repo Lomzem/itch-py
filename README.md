@@ -18,6 +18,38 @@ itch @ git+https://github.com/Lomzem/itch-py.git@vX.Y.Z
 
 ## Connect to a Rig
 
+Plug the Rig into the PC over USB. With one Rig plugged in, connect without naming it:
+
+```python
+from itch import Rig
+
+with Rig.connect() as rig:
+    print(rig.label, rig.hardware_id, rig.firmware_version)
+```
+
+With several, name the one you want by its label, Hardware ID or port, ignoring case:
+
+```python
+Rig.connect("bench3")
+Rig.connect("60:55:F9:C0:27:18")
+Rig.connect("COM4")  # or "/dev/ttyACM0", or a stable /dev/serial/by-id/... link
+```
+
+`itch list` shows what is plugged in. Rigs another script has open show as in use, and itch-py sends them nothing, so listing or connecting doesn't disturb a running test:
+
+```sh
+$ itch list
+PORT          HARDWARE ID        LABEL   FIRMWARE
+/dev/ttyACM0  60:55:F9:C0:27:18  bench3  1.0.0
+/dev/ttyACM1  60:55:F9:C0:27:19  in use
+```
+
+From Python, `itch.list_rigs()` returns the same list. On Linux, "in use" means another itch-py script, or any program that locks the port as itch-py does; a serial monitor such as `screen` doesn't lock it.
+
+On Linux, your user needs access to the port: add yourself to the group that owns `/dev/ttyACM*` (`dialout` on Debian and Ubuntu, `uucp` on Arch), then log in again.
+
+### The simulator
+
 Without a Rig, use the simulator. Download `itch-sim-windows-x86_64.exe` or `itch-sim-linux-x86_64` from the [`itch` release](https://github.com/Lomzem/itch/releases) listed for your itch-py release under [Releases](#releases). Run it and it prints the address it listens on:
 
 ```sh
@@ -29,10 +61,8 @@ itch-sim listening on tcp://127.0.0.1:49152
 Then connect to that address:
 
 ```python
-from itch import Rig
-
 with Rig.connect("tcp://127.0.0.1:<port>") as rig:
-    print(rig.label, rig.hardware_id, rig.firmware_version)
+    ...
 ```
 
 ## Set and read Channels
@@ -74,8 +104,10 @@ with rig.session():
 Or from the command line:
 
 ```sh
-itch label tcp://127.0.0.1:<port> bench3
+itch label itch-C02718 bench3
 ```
+
+`itch label` takes the same names as `Rig.connect()`, including a port or `tcp://host:port`.
 
 ## Rig logs
 
