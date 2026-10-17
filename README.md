@@ -77,6 +77,52 @@ Or from the command line:
 itch label tcp://127.0.0.1:<port> bench3
 ```
 
+## Drive a DUT with a Profile
+
+A Profile names a DUT model's settings, so a script says `"1080p"` instead of which Channels to turn on. Write one as a short class. Each Field lists the Channels it uses, and each Value lists one `"on"`/`"off"` per Channel, in the same order:
+
+```python
+from itch import Profile, alias, field
+
+
+class AcmeWidget(Profile):
+    resolution = field(
+        channels=[1, 2],
+        values={
+            "720p": ["on", "off"],
+            "1080p": ["off", "on"],
+        },
+    )
+    mode = field(
+        channels=[4, 5, 6],
+        values={
+            "cinema": ["off", "off", "off"],
+            "night": [
+                ["on", "off", "off"],
+                ["on", "off", "on"],
+            ],  # two Encodings; the first is the default
+            "movie": alias("cinema"),  # another name for "cinema"
+        },
+    )
+```
+
+Then drive the DUT through it. In VS Code, the Values autocomplete inside `set("…")`, and a misspelt one is underlined once type checking is on (`"python.analysis.typeCheckingMode": "basic"`):
+
+```python
+dut = AcmeWidget(rig)
+with rig.session():
+    dut.resolution.set("1080p")
+    dut.mode.set("night", encoding=2)
+    for encoding in dut.mode.all_encodings():  # every Encoding of every Value
+        encoding.set()
+        ...  # check the DUT
+
+print(dut.mode.get())  # "night"; an alias reads back as the Value it names
+print(dut.mode.get_encoding())  # mode="night" Encoding 2 of 2 ["on", "off", "on"]
+```
+
+A mistake in a Profile, such as a wrong number of positions, raises a `ProfileError` saying what to fix as soon as the Profile is loaded.
+
 ## Rig logs
 
 The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger:
