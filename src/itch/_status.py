@@ -56,20 +56,20 @@ class Status:
     usb_tx_dropped: int
     """Frames the Rig cut short because the USB host stopped reading."""
 
-    @classmethod
-    def _from_reply(cls, reply: _wire.GetStatusReply) -> Status:
-        return cls(
-            uptime=timedelta(milliseconds=reply.uptime_ms),
-            reset_reason=_reset_reason(reply.reset_reason),
-            last_panic=reply.last_panic or None,
-            holder=reply.holder or None,
-            crc_failures=reply.crc_failures,
-            oversized_frames=reply.oversized_frames,
-            malformed_frames=reply.malformed_frames,
-            dropped_logs=reply.dropped_logs,
-            expander_faults=reply.expander_faults,
-            usb_tx_dropped=reply.usb_tx_dropped,
-        )
+
+def from_reply(reply: _wire.GetStatusReply) -> Status:
+    return Status(
+        uptime=timedelta(milliseconds=reply.uptime_ms),
+        reset_reason=_reset_reason(reply.reset_reason),
+        last_panic=reply.last_panic or None,
+        holder=reply.holder or None,
+        crc_failures=reply.crc_failures,
+        oversized_frames=reply.oversized_frames,
+        malformed_frames=reply.malformed_frames,
+        dropped_logs=reply.dropped_logs,
+        expander_faults=reply.expander_faults,
+        usb_tx_dropped=reply.usb_tx_dropped,
+    )
 
 
 def _reset_reason(code: int) -> str:

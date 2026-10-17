@@ -43,18 +43,24 @@ def test_every_error_code_has_an_exception() -> None:
 def test_an_error_reply_raises_its_exception(code: ErrorCode) -> None:
     error, phrase = RAISES[code]
     detail = HOLDER if code in (ErrorCode.LeaseHeld, ErrorCode.LeaseLost) else ""
-    with refusing(code, detail) as peer, Rig.connect(peer.url) as rig:
-        with pytest.raises(error) as raised:
-            rig.get_channels()
+    with (
+        refusing(code, detail) as peer,
+        Rig.connect(peer.url) as rig,
+        pytest.raises(error) as raised,
+    ):
+        rig.get_channels()
     message = str(raised.value)
     assert phrase in message, message
     assert "error code" not in message, message
 
 
 def test_an_unknown_error_code_raises_a_generic_itch_error() -> None:
-    with refusing(99, "new trouble") as peer, Rig.connect(peer.url) as rig:
-        with pytest.raises(ItchError) as raised:
-            rig.get_channels()
+    with (
+        refusing(99, "new trouble") as peer,
+        Rig.connect(peer.url) as rig,
+        pytest.raises(ItchError) as raised,
+    ):
+        rig.get_channels()
     assert type(raised.value) is ItchError
     assert str(raised.value) == "Rig bench3 refused GetChannels with error code 99: new trouble"
 

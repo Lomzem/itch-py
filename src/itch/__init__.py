@@ -27,8 +27,8 @@ __all__ = [
     "NotRespondingError",
     "ProfileError",
     "ProtocolMismatchError",
-    "RigNotFoundError",
     "Rig",
+    "RigNotFoundError",
     "Session",
     "Status",
 ]
