@@ -8,11 +8,12 @@ from itch._errors import (
     ProfileError,
     ProtocolMismatchError,
 )
-from itch._profile import Profile, alias, field
+from itch._profile import Encoding, Profile, alias, field
 from itch._rig import Rig, Session
 
 __all__ = [
     "DevelopmentBuildWarning",
+    "Encoding",
     "ItchError",
     "LeaseError",
     "LeaseRequiredError",

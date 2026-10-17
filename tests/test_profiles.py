@@ -135,3 +135,10 @@ def test_get_raises_when_the_channels_match_no_value(rig: Rig) -> None:
 def test_setting_a_field_outside_a_session_raises_lease_required(rig: Rig) -> None:
     with pytest.raises(LeaseRequiredError):
         AcmeWidget(rig).resolution.set("4k")
+
+
+def test_assigning_to_a_field_points_to_set(rig: Rig) -> None:
+    dut = AcmeWidget(rig)
+    with pytest.raises(AttributeError, match=r'Use dut\.mode\.set\("cinema"\) to change mode\.'):
+        dut.mode = "cinema"  # pyright: ignore[reportAttributeAccessIssue]
+    assert repr(dut.mode) == "<Field AcmeWidget.mode>"

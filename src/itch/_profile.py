@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import difflib
 from collections.abc import Sequence
-from typing import Any, Generic, LiteralString, TypeVar, cast, overload
+from typing import Any, Generic, LiteralString, Never, NoReturn, TypeVar, cast, overload
 
 from itch._errors import ItchError, ProfileError
 from itch._rig import CHANNELS, Position, Rig
@@ -202,6 +202,10 @@ class Field(Generic[V]):
         if dut is None:
             return self
         return FieldOnRig(self, dut)
+
+    def __set__(self, dut: Profile, value: Never) -> NoReturn:
+        # Without this, `dut.mode = "cinema"` would quietly hide the Field and change nothing.
+        raise AttributeError(f'Use dut.{self.name}.set("{value}") to change {self.name}.')
 
 
 class FieldOnRig(Generic[V]):
