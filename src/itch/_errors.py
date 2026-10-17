@@ -25,6 +25,30 @@ class LeaseError(ItchError):
     """A problem with the Lease that lets a script change a Rig's Channels."""
 
 
+class LeaseHeldError(LeaseError):
+    """Someone else holds the Rig. `.holder` says who."""
+
+    def __init__(self, rig: str, holder: str) -> None:
+        super().__init__(
+            f"Rig {rig} is in use by {holder}. If that script is dead, take the Rig over "
+            "with `rig.session(takeover=True)`."
+        )
+        self.holder = holder
+
+
+class LeaseLostError(LeaseError):
+    """Someone else took the Rig from this session. `.reason` names the new Holder.
+
+    The session no longer controls the Rig, so its changes fail until it is released.
+    """
+
+    def __init__(self, rig: str, reason: str) -> None:
+        super().__init__(
+            f"Rig {rig} was taken over by {reason}; this script no longer controls it."
+        )
+        self.reason = reason
+
+
 class LeaseRequiredError(LeaseError):
     """A write outside a Session."""
 
@@ -82,9 +106,9 @@ def rig_error(rig: str, request: str, code: int, detail: str) -> ItchError:
         case ErrorCode.LeaseRequired:
             return LeaseRequiredError()
         case ErrorCode.LeaseHeld:
-            return LeaseError(f"Rig {rig} is in use by {detail}.")
+            return LeaseHeldError(rig, detail)
         case ErrorCode.LeaseLost:
-            return LeaseError(f"Rig {rig} was taken over by {detail}.")
+            return LeaseLostError(rig, detail)
         case ErrorCode.UnknownRequest:
             message = f"Rig {rig} doesn't know {request}. Have the dev update the Rig or itch-py."
         case ErrorCode.UnsupportedVersion:

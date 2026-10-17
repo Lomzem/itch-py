@@ -1,12 +1,16 @@
 """Sessions: acquiring, renewing and releasing the Lease."""
 
+import getpass
+import socket
+import sys
 import time
 from typing import Any
 
 import pytest
+from conftest import RunningSim
 from scripted_rig import ACME_HELLO, ScriptedRig
 
-from itch import LeaseRequiredError, Rig, Session
+from itch import LeaseHeldError, LeaseLostError, LeaseRequiredError, Rig, Session
 from itch._wire import (
     AcquireLease,
     AcquireLeaseReply,
@@ -98,10 +102,105 @@ def test_each_session_gets_a_fresh_random_token() -> None:
     assert 0 not in tokens
 
 
-def test_closing_the_rig_releases_its_session() -> None:
-    with lease_peer(ttl_ms=10_000) as peer:
-        rig = Rig.connect(peer.url)
-        rig.session()
-        rig.close()
-        assert peer.closed.wait(2)
-    assert sent(peer)[-1] is ReleaseLease
+def test_closing_the_rig_releases_its_session(sim: str) -> None:
+    first = Rig.connect(sim)
+    first.session()
+    first.close()
+    with Rig.connect(sim) as second, second.session():
+        second.clear()
+
+
+HOLDER = "qa@bench-pc acme_test.py"
+
+
+def test_a_session_on_a_rig_someone_else_holds_names_the_holder(sim: str) -> None:
+    with Rig.connect(sim) as first, Rig.connect(sim) as second, first.session(holder=HOLDER):
+        with pytest.raises(LeaseHeldError) as raised:
+            second.session(holder="dev@laptop other.py")
+        assert raised.value.holder == HOLDER
+        assert "takeover=True" in str(raised.value)
+        with pytest.raises(LeaseRequiredError):
+            second.set_channel(1, "on")
+
+
+def test_takeover_takes_the_rig_and_the_old_holders_next_change_raises(sim: str) -> None:
+    with Rig.connect(sim) as first, Rig.connect(sim) as second:
+        with first.session(holder=HOLDER):
+            first.set_channels({1: "on", 2: "off"})
+            with second.session(holder="dev@laptop other.py", takeover=True):
+                assert second.get_channels([1, 2]) == {1: "on", 2: "off"}
+                with pytest.raises(LeaseLostError) as raised:
+                    first.set_channel(2, "on")
+                assert raised.value.reason == "dev@laptop other.py"
+                second.set_channel(2, "on")
+        assert second.get_channels([1, 2]) == {1: "on", 2: "on"}
+
+
+def test_a_lease_lost_seen_by_the_heartbeat_is_raised_on_the_next_call(sim: str) -> None:
+    with Rig.connect(sim) as first, Rig.connect(sim) as second:
+        with first.session(holder=HOLDER):
+            with second.session(holder="dev@laptop other.py", takeover=True):
+                time.sleep(10 / 3 + 0.5)  # Until first's heartbeat has renewed once.
+            # The Rig is free again, but first's session has lost it all the same.
+            with pytest.raises(LeaseLostError) as raised:
+                first.clear()
+            assert raised.value.reason == "dev@laptop other.py"
+            with pytest.raises(LeaseLostError):
+                first.set_channel(1, "on")
+        with first.session():
+            first.clear()
+
+
+def test_a_lapsed_session_carries_on_when_nobody_else_took_the_rig() -> None:
+    with (
+        RunningSim("--clock-rate", "1000") as sim,
+        Rig.connect(sim.url) as rig,
+        rig.session(holder=HOLDER),
+    ):
+        rig.set_channel(1, "on")
+        time.sleep(0.05)  # 50 s on the Rig's clock, between two heartbeats.
+        assert rig.status().holder is None
+        rig.set_channel(2, "on")
+        assert rig.get_channels([1, 2]) == {1: "on", 2: "on"}
+
+
+@pytest.mark.parametrize(
+    ("user", "host", "script", "holder"),
+    [
+        ("qa", "bench-pc", "/home/qa/tests/acme_test.py", "qa@bench-pc acme_test.py"),
+        ("ü" * 10, "bench-pc", "t.py", "üüüüüü…@bench-pc t.py"),
+        (
+            "u" * 20,
+            "h" * 30,
+            "s" * 40 + ".py",
+            "uuuuuuuuuuuuu…@hhhhhhhhhhhhhhhhhhhhh… sssssssssssssssssss…",
+        ),
+        ("qa", "bench-pc", "", "qa@bench-pc python"),
+    ],
+    ids=["plain", "utf-8", "long", "repl"],
+)
+def test_the_default_holder_is_user_at_host_and_script(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, user: str, host: str, script: str, holder: str
+) -> None:
+    monkeypatch.setattr(getpass, "getuser", lambda: user)
+    monkeypatch.setattr(socket, "gethostname", lambda: host)
+    monkeypatch.setattr(sys, "argv", [script])
+    with rig.session():
+        assert rig.status().holder == holder
+    assert len(holder.encode()) <= 64
+
+
+def test_a_holder_over_64_bytes_is_a_value_error(rig: Rig) -> None:
+    with pytest.raises(ValueError, match="64 bytes"):
+        rig.session(holder="ü" * 33)
+    with rig.session(holder="h" * 64):
+        assert rig.status().holder == "h" * 64
+
+
+def test_a_second_session_on_the_same_rig_is_a_runtime_error(rig: Rig) -> None:
+    with rig.session():
+        with pytest.raises(RuntimeError, match="already"):
+            rig.session()
+        rig.clear()
+    with rig.session():
+        rig.clear()

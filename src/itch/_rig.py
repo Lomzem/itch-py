@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import getpass
 import itertools
 import logging
 import secrets
+import socket
+import sys
 import threading
 import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 from types import TracebackType
 from typing import Literal, Self, TypeVar
 
@@ -17,6 +21,7 @@ from itch._errors import (
     DevelopmentBuildWarning,
     DisconnectedError,
     ItchError,
+    LeaseLostError,
     LeaseRequiredError,
     NotRespondingError,
     ProtocolMismatchError,
@@ -131,16 +136,28 @@ class Rig:
         """The Rig's firmware version, such as `1.0.0`."""
         return self._hello.firmware_version
 
-    def session(self) -> Session:
+    def session(self, holder: str | None = None, *, takeover: bool = False) -> Session:
         """Takes the Rig's Lease so this script can change its Channels.
 
         Use it as `with rig.session():`, or keep the result and call `.release()` when done.
         The session keeps itself alive in the background until released.
+
+        `holder` tells colleagues who holds the Rig, at most 64 bytes of UTF-8. It defaults to
+        `user@host script.py`. Raises `LeaseHeldError` if someone else holds the Rig; if their
+        script is dead, `takeover=True` takes the Rig from them.
         """
-        token = _new_token()
-        holder = ""
+        if self._lease is not None:
+            raise RuntimeError(
+                f"Rig {self._name} already has a session: release it before starting another."
+            )
+        if holder is None:
+            holder = _default_holder()
+        elif (size := len(holder.encode())) > _wire.MAX_LABEL:
+            raise ValueError(
+                f"The holder {holder!r} is {size} bytes, but at most {_wire.MAX_LABEL} bytes fit."
+            )
         reply = self._request(
-            _wire.AcquireLease(token, takeover=False, holder=holder), _wire.AcquireLeaseReply
+            _wire.AcquireLease(token := _new_token(), takeover, holder), _wire.AcquireLeaseReply
         )
         lease = _Lease(token, holder, reply.ttl_ms / 1000 / 3, self._renew)
         self._lease = lease
@@ -228,15 +245,24 @@ class Rig:
         _RIG_LOGGER.log(_PYTHON_LEVELS[event.level - 1], "Rig %s: %s", self._name, event.text)
 
     def _token(self) -> int:
-        """The Lease token for a write. Raises `LeaseRequiredError` outside a session."""
+        """The Lease token for a write.
+
+        Raises `LeaseRequiredError` outside a session, and `LeaseLostError` once the heartbeat
+        has seen someone else take the Rig.
+        """
         if self._lease is None:
             raise LeaseRequiredError
+        if self._lease.lost_to is not None:
+            raise LeaseLostError(self._name, self._lease.lost_to)
         return self._lease.token
 
     def _renew(self, lease: _Lease) -> None:
-        # A failed renewal shows up again on the script's next call, which reports it.
-        with contextlib.suppress(ItchError):
+        try:
             self._request(_wire.RenewLease(lease.token, lease.holder), _wire.RenewLeaseReply)
+        except LeaseLostError as err:
+            lease.lost_to = err.reason
+        except ItchError:
+            pass  # A failed renewal shows up again on the script's next call, which reports it.
 
     def _release(self, lease: _Lease) -> None:
         if not lease.stop():
@@ -303,6 +329,9 @@ class Session:
 
     Get one with `rig.session()`. A background thread renews the Lease every third of its
     lifetime, so the script may sleep or block for as long as it likes.
+
+    If someone takes the Rig over, the script's next change raises `LeaseLostError`.
+    Leaving the `with` block never does.
     """
 
     def __init__(self, release: Callable[[], None]) -> None:
@@ -332,6 +361,8 @@ class _Lease:
     ) -> None:
         self.token = token
         self.holder = holder
+        self.lost_to: str | None = None
+        """Who took the Rig, once the heartbeat has seen it go."""
         self._stopped = threading.Event()
         self._heartbeat = threading.Thread(
             target=self._beat, args=(interval, renew), name="itch-heartbeat", daemon=True
@@ -347,7 +378,7 @@ class _Lease:
         return True
 
     def _beat(self, interval: float, renew: Callable[[_Lease], None]) -> None:
-        while not self._stopped.wait(interval):
+        while self.lost_to is None and not self._stopped.wait(interval):
             renew(self)
 
 
@@ -356,6 +387,23 @@ def _new_token() -> int:
     while not (token := secrets.randbits(64)):
         pass
     return token
+
+
+def _default_holder() -> str:
+    """`user@host script.py`, each part cut short with `…` so the whole fits 64 bytes."""
+    user = _fit(getpass.getuser(), 16)
+    host = _fit(socket.gethostname(), 24)
+    script = Path(sys.argv[0]).name if sys.argv else ""
+    start = f"{user}@{host} "
+    return start + _fit(script or "python", _wire.MAX_LABEL - len(start.encode()))
+
+
+def _fit(text: str, size: int) -> str:
+    """`text`, cut short with `…` on a character boundary to fit `size` bytes of UTF-8."""
+    data = text.encode()
+    if len(data) <= size:
+        return text
+    return data[: size - len("…".encode())].decode(errors="ignore") + "…"
 
 
 def _bit(channel: int) -> int:

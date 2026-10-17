@@ -5,10 +5,15 @@ from conftest import RunningSim
 from scripted_rig import ScriptedRig, after_connecting
 
 import itch
-from itch import HardwareFaultError, ItchError, LeaseError, LeaseRequiredError, Rig
+from itch import (
+    HardwareFaultError,
+    ItchError,
+    LeaseHeldError,
+    LeaseLostError,
+    LeaseRequiredError,
+    Rig,
+)
 from itch._wire import ErrorCode, ErrorResponse
-
-HOLDER = "qa@bench-pc acme_test.py"
 
 # What each code raises, and a phrase its message must hold.
 RAISES: dict[ErrorCode, tuple[type[ItchError], str]] = {
@@ -16,13 +21,16 @@ RAISES: dict[ErrorCode, tuple[type[ItchError], str]] = {
     ErrorCode.UnsupportedVersion: (ItchError, "update the Rig or itch-py"),
     ErrorCode.Malformed: (ItchError, "itch-py bug"),
     ErrorCode.LeaseRequired: (LeaseRequiredError, "needs a session"),
-    ErrorCode.LeaseHeld: (LeaseError, f"in use by {HOLDER}"),
-    ErrorCode.LeaseLost: (LeaseError, f"taken over by {HOLDER}"),
+    ErrorCode.LeaseHeld: (LeaseHeldError, "in use by"),
+    ErrorCode.LeaseLost: (LeaseLostError, "taken over by"),
     ErrorCode.Busy: (ItchError, "busy"),
     ErrorCode.HardwareFault: (HardwareFaultError, "not the DUT"),
     ErrorCode.StorageFault: (ItchError, "couldn't save"),
     ErrorCode.Internal: (ItchError, "internal error"),
 }
+
+ON_THE_SIM = {ErrorCode.LeaseHeld, ErrorCode.LeaseLost}
+"""Codes two clients provoke on the real sim, in `test_session.py`."""
 
 
 def refusing(code: int, detail: str = "") -> ScriptedRig:
@@ -36,12 +44,13 @@ def test_every_error_code_has_an_exception() -> None:
     assert set(RAISES) == set(ErrorCode)
 
 
-@pytest.mark.parametrize("code", list(ErrorCode), ids=lambda code: code.name)
+@pytest.mark.parametrize(
+    "code", [code for code in ErrorCode if code not in ON_THE_SIM], ids=lambda code: code.name
+)
 def test_an_error_reply_raises_its_exception(code: ErrorCode) -> None:
     error, phrase = RAISES[code]
-    detail = HOLDER if code in (ErrorCode.LeaseHeld, ErrorCode.LeaseLost) else ""
     with (
-        refusing(code, detail) as peer,
+        refusing(code) as peer,
         Rig.connect(peer.url) as rig,
         pytest.raises(error) as raised,
     ):
