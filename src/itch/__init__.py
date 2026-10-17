@@ -5,8 +5,10 @@ from itch._errors import (
     ItchError,
     LeaseError,
     LeaseRequiredError,
+    ProfileError,
     ProtocolMismatchError,
 )
+from itch._profile import Profile, alias, field
 from itch._rig import Rig, Session
 
 __all__ = [
@@ -14,7 +16,11 @@ __all__ = [
     "ItchError",
     "LeaseError",
     "LeaseRequiredError",
+    "Profile",
+    "ProfileError",
     "ProtocolMismatchError",
     "Rig",
     "Session",
+    "alias",
+    "field",
 ]

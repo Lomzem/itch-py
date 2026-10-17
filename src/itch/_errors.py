@@ -29,3 +29,7 @@ class LeaseRequiredError(LeaseError):
         super().__init__(
             "Changing Channels needs a session: wrap the writes in `with rig.session():`."
         )
+
+
+class ProfileError(ItchError):
+    """A Profile is written wrongly. Raised when the Profile is defined, naming the mistake."""

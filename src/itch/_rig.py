@@ -157,7 +157,7 @@ class Rig:
             mask |= bit
             if _is_on(position):
                 values |= bit
-        self._request(_wire.WriteChannels(self._token(), mask, values), _wire.WriteChannelsReply)
+        self._write_channels(mask, values)
 
     def clear(self) -> None:
         """Turns every Channel off. Needs a session."""
@@ -172,7 +172,7 @@ class Rig:
         wanted = {
             channel: _bit(channel) for channel in (CHANNELS if channels is None else channels)
         }
-        state = self._request(_wire.GetChannels(), _wire.GetChannelsReply).state
+        state = self._read_channels()
         return {channel: "on" if state & bit else "off" for channel, bit in wanted.items()}
 
     def close(self) -> None:
@@ -218,6 +218,14 @@ class Rig:
         if event.dropped:
             _RIG_LOGGER.warning("Rig %s dropped %d log messages", self._name, event.dropped)
         _RIG_LOGGER.log(_PYTHON_LEVELS[event.level - 1], "Rig %s: %s", self._name, event.text)
+
+    def _write_channels(self, mask: int, values: int) -> None:
+        """One Mask write: the Channels in `mask` take their bits from `values`."""
+        self._request(_wire.WriteChannels(self._token(), mask, values), _wire.WriteChannelsReply)
+
+    def _read_channels(self) -> int:
+        """The commanded state of all 16 Channels, bit 0 for CH1."""
+        return self._request(_wire.GetChannels(), _wire.GetChannelsReply).state
 
     def _token(self) -> int:
         """The Lease token for a write. Raises `LeaseRequiredError` outside a session."""
