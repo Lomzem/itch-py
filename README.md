@@ -51,6 +51,17 @@ print(rig.get_channels())  # {1: "off", 2: "off", ..., 16: "off"}
 
 The session keeps itself alive while the script sleeps or blocks. In Jupyter or a REPL, keep it across cells with `s = rig.session()` and later `s.release()`. Leaving the session leaves the Channels as they are.
 
+## Sharing a Rig
+
+One script at a time holds a Rig. If someone else holds it, `rig.session()` raises `LeaseHeldError` at once, naming them (`user@host script.py` by default; pass `holder="..."` to say more, up to 64 bytes). If their script is dead, take the Rig over:
+
+```python
+with rig.session(takeover=True):
+    ...
+```
+
+The script you took it from gets `LeaseLostError` on its next change. A session left idle too long (a paused debugger, say) carries on as before if nobody else took the Rig.
+
 ## Rig logs
 
 The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger:
