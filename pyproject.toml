@@ -25,6 +25,8 @@ dev = ["pyright", "pytest", "ruff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The Profile template in docs/ is tested too.
+pythonpath = ["docs"]
 addopts = ["--strict-markers"]
 filterwarnings = ["error"]
 
@@ -36,7 +38,8 @@ extend-exclude = ["prototypes"]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "docs"]
+extraPaths = ["docs"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
 # Tests mark deliberate type errors with `# pyright: ignore[...]`; this fails if one goes unflagged.

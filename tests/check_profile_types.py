@@ -27,6 +27,9 @@ def script(rig: Rig) -> None:
             encoding.set()
         for encoding in dut.mode.all_encodings():
             encoding.set()
+        with dut.batch():
+            dut.refresh.set("50hz")
+            dut.mode.set("night")
 
     assert_type(dut.resolution.get(), Resolution)
     assert_type(dut.mode.get(), Mode)
@@ -43,6 +46,8 @@ def typos_in_a_script(rig: Rig) -> None:
     dut.mode.set(1)  # pyright: ignore[reportArgumentType]
     dut.mode.sett("night")  # pyright: ignore[reportAttributeAccessIssue]
     dut.mood.set("night")  # pyright: ignore[reportAttributeAccessIssue]
+    with dut.batch():
+        dut.mode.set("nigth")  # pyright: ignore[reportArgumentType]
 
 
 def assigning_a_value(rig: Rig) -> None:
