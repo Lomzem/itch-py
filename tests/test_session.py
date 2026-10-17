@@ -22,6 +22,8 @@ from itch._wire import (
     ReplyBody,
     Request,
     RequestBody,
+    SetLogLevel,
+    SetLogLevelReply,
 )
 
 
@@ -29,6 +31,7 @@ def lease_peer(ttl_ms: int) -> ScriptedRig:
     """A peer granting Leases that live `ttl_ms`, with CH1 on."""
     replies: dict[type[RequestBody], ReplyBody] = {
         Hello: ACME_HELLO,
+        SetLogLevel: SetLogLevelReply(),
         AcquireLease: AcquireLeaseReply(ttl_ms),
         RenewLease: RenewLeaseReply(),
         ReleaseLease: ReleaseLeaseReply(),
@@ -66,11 +69,11 @@ def test_release_is_safe_to_call_twice(rig: Rig) -> None:
 def test_the_heartbeat_renews_every_third_of_the_ttl_until_release() -> None:
     with lease_peer(ttl_ms=300) as peer, Rig.connect(peer.url) as rig:
         session = rig.session()
-        assert sent(peer) == [Hello, AcquireLease]
+        assert sent(peer) == [Hello, SetLogLevel, AcquireLease]
         time.sleep(0.35)
         session.release()
         time.sleep(0.25)
-    acquire, *renewals, release = (request.body for request in peer.requests[1:])
+    acquire, *renewals, release = (request.body for request in peer.requests[2:])
     assert isinstance(acquire, AcquireLease)
     assert acquire.token != 0
     assert 2 <= len(renewals) <= 4, renewals

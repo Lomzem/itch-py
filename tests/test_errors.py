@@ -1,11 +1,11 @@
 """Rig error codes and the exception hierarchy."""
 
 import pytest
-from scripted_rig import ACME_HELLO, ScriptedRig
+from scripted_rig import ScriptedRig, after_connecting
 
 import itch
 from itch import ItchError, LeaseError, LeaseRequiredError, Rig
-from itch._wire import ErrorCode, ErrorResponse, Hello, Message, OkResponse, Request
+from itch._wire import ErrorCode, ErrorResponse
 
 HOLDER = "qa@bench-pc acme_test.py"
 
@@ -25,14 +25,10 @@ RAISES: dict[ErrorCode, tuple[type[ItchError], str]] = {
 
 
 def refusing(code: int, detail: str = "") -> ScriptedRig:
-    """A peer that answers `Hello` and refuses everything else with `code`."""
-
-    def answer(request: Request) -> list[Message]:
-        if isinstance(request.body, Hello):
-            return [OkResponse(request.request_id, ACME_HELLO)]
-        return [ErrorResponse(request.body.TYPE, request.request_id, code, detail)]
-
-    return ScriptedRig(answer)
+    """A peer that refuses everything after connecting with `code`."""
+    return after_connecting(
+        lambda request: [ErrorResponse(request.body.TYPE, request.request_id, code, detail)]
+    )
 
 
 def test_every_error_code_has_an_exception() -> None:

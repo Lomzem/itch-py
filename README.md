@@ -51,6 +51,18 @@ print(rig.get_channels())  # {1: "off", 2: "off", ..., 16: "off"}
 
 The session keeps itself alive while the script sleeps or blocks. In Jupyter or a REPL, keep it across cells with `s = rig.session()` and later `s.release()`. Leaving the session leaves the Channels as they are.
 
+## Rig logs
+
+The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger:
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+with Rig.connect("tcp://127.0.0.1:<port>", log_level=logging.INFO) as rig:
+    ...
+```
+
 ## Releases
 
 Each itch-py release is tested against one `itch` release: its `itch-sim` and its firmware.

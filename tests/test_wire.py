@@ -18,6 +18,7 @@ from itch._wire import (
     GetStatusReply,
     Hello,
     HelloReply,
+    LogEvent,
     Message,
     OkResponse,
     ReleaseLease,
@@ -26,6 +27,9 @@ from itch._wire import (
     RenewLeaseReply,
     Request,
     RequestType,
+    SetLogLevel,
+    SetLogLevelReply,
+    UnknownEvent,
     WriteChannels,
     WriteChannelsReply,
     decode,
@@ -38,6 +42,7 @@ REQUESTS: dict[str, type[Any]] = {
     "WriteChannels": WriteChannels,
     "Clear": Clear,
     "GetStatus": GetStatus,
+    "SetLogLevel": SetLogLevel,
     "AcquireLease": AcquireLease,
     "RenewLease": RenewLease,
     "ReleaseLease": ReleaseLease,
@@ -48,10 +53,12 @@ REPLIES: dict[str, type[Any]] = {
     "WriteChannels": WriteChannelsReply,
     "Clear": ClearReply,
     "GetStatus": GetStatusReply,
+    "SetLogLevel": SetLogLevelReply,
     "AcquireLease": AcquireLeaseReply,
     "RenewLease": RenewLeaseReply,
     "ReleaseLease": ReleaseLeaseReply,
 }
+EVENTS: dict[str, type[Any]] = {"Log": LogEvent}
 
 
 def body(cls: type[Any], fields: dict[str, Any]) -> Any:
@@ -68,6 +75,8 @@ def body(cls: type[Any], fields: dict[str, Any]) -> Any:
 def message(case: dict[str, Any]) -> Message:
     fields = dict(case)
     kind, type_ = fields.pop("kind"), fields.pop("type")
+    if kind == "event":
+        return body(EVENTS[type_], fields)
     request_id = fields.pop("request_id")
     if kind == "request":
         return Request(request_id, body(REQUESTS[type_], fields))
@@ -86,7 +95,7 @@ def test_messages_match_vectors(vectors: dict[str, Any]) -> None:
 
 def test_every_message_type_has_a_vector(vectors: dict[str, Any]) -> None:
     covered = {case["message"]["type"] for case in vectors["messages"]}
-    assert covered == {t.name for t in RequestType}
+    assert covered == {t.name for t in RequestType} | EVENTS.keys()
 
 
 def test_rejects_malformed_vectors(vectors: dict[str, Any]) -> None:
@@ -102,3 +111,7 @@ def test_rejects_malformed_vectors(vectors: dict[str, Any]) -> None:
 def test_error_response_keeps_an_unknown_code() -> None:
     reply = decode(bytes.fromhex("81 78 56 34 12 63 00"))
     assert reply == ErrorResponse(RequestType.Hello, 0x12345678, 99, "")
+
+
+def test_other_events_decode_as_unknown() -> None:
+    assert decode(bytes.fromhex("41 01 02")) == UnknownEvent(0x41, b"\x01\x02")

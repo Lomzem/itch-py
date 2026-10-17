@@ -4,10 +4,10 @@ import dataclasses
 from datetime import timedelta
 
 import pytest
-from scripted_rig import ACME_HELLO, ScriptedRig
+from scripted_rig import ScriptedRig, after_connecting
 
 from itch import Rig, Status
-from itch._wire import GetStatusReply, Hello, Message, OkResponse, Request
+from itch._wire import GetStatusReply, OkResponse
 
 AFTER_A_PANIC = GetStatusReply(
     uptime_ms=3_723_000,
@@ -24,11 +24,7 @@ AFTER_A_PANIC = GetStatusReply(
 
 
 def reporting(status: GetStatusReply) -> ScriptedRig:
-    def answer(request: Request) -> list[Message]:
-        reply = ACME_HELLO if isinstance(request.body, Hello) else status
-        return [OkResponse(request.request_id, reply)]
-
-    return ScriptedRig(answer)
+    return after_connecting(lambda request: [OkResponse(request.request_id, status)])
 
 
 def test_simulator_reports_a_fresh_power_on(rig: Rig) -> None:

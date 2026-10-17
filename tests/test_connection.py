@@ -2,17 +2,10 @@
 
 import pytest
 from conftest import RunningSim
-from scripted_rig import ACME_HELLO, ScriptedRig
+from scripted_rig import ScriptedRig, after_connecting
 
 from itch import DisconnectedError, NotRespondingError, Rig, _rig
-from itch._wire import (
-    GetChannels,
-    GetChannelsReply,
-    Hello,
-    Message,
-    OkResponse,
-    Request,
-)
+from itch._wire import GetChannels, GetChannelsReply, Message, OkResponse, Request
 
 
 @pytest.fixture(autouse=True)
@@ -21,19 +14,17 @@ def short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def answering_after(silences: int) -> ScriptedRig:
-    """A peer that answers `Hello`, then ignores the first `silences` other requests."""
+    """A peer that connects, then ignores the first `silences` requests."""
     ignored = 0
 
     def answer(request: Request) -> list[Message]:
         nonlocal ignored
-        if isinstance(request.body, Hello):
-            return [OkResponse(request.request_id, ACME_HELLO)]
         if ignored < silences:
             ignored += 1
             return []
         return [OkResponse(request.request_id, GetChannelsReply(0x0001))]
 
-    return ScriptedRig(answer)
+    return after_connecting(answer)
 
 
 def sent_get_channels(peer: ScriptedRig) -> list[Request]:

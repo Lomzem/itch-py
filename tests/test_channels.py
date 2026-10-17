@@ -3,10 +3,9 @@
 import re
 
 import pytest
-from scripted_rig import ACME_HELLO, ScriptedRig
+from scripted_rig import ACME_HELLO, answering
 
 from itch import ItchError, LeaseRequiredError, Rig
-from itch._wire import Hello, OkResponse, Request
 
 ALL_OFF = dict.fromkeys(range(1, 17), "off")
 
@@ -62,14 +61,11 @@ def test_writes_outside_a_session_raise_lease_required(rig: Rig) -> None:
 
 
 def test_a_write_outside_a_session_makes_no_round_trip() -> None:
-    def answer(request: Request) -> list[OkResponse]:
-        assert request.body == Hello()
-        return [OkResponse(request.request_id, ACME_HELLO)]
-
-    with ScriptedRig(answer) as peer, Rig.connect(peer.url) as rig:
+    with answering(ACME_HELLO) as peer, Rig.connect(peer.url) as rig:
+        connect_requests = len(peer.requests)
         with pytest.raises(LeaseRequiredError):
             rig.set_channel(1, "on")
-        assert len(peer.requests) == 1
+        assert len(peer.requests) == connect_requests
     assert issubclass(LeaseRequiredError, ItchError)
 
 
