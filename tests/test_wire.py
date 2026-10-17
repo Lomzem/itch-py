@@ -5,25 +5,55 @@ from typing import Any, get_type_hints
 import pytest
 
 from itch._wire import (
+    AcquireLease,
+    AcquireLeaseReply,
+    Clear,
+    ClearReply,
     DecodeError,
     ErrorCode,
     ErrorResponse,
+    GetChannels,
+    GetChannelsReply,
     Hello,
     HelloReply,
     LogEvent,
     Message,
     OkResponse,
+    ReleaseLease,
+    ReleaseLeaseReply,
+    RenewLease,
+    RenewLeaseReply,
     Request,
     RequestType,
     SetLogLevel,
     SetLogLevelReply,
     UnknownEvent,
+    WriteChannels,
+    WriteChannelsReply,
     decode,
     encode,
 )
 
-REQUESTS: dict[str, type[Any]] = {"Hello": Hello, "SetLogLevel": SetLogLevel}
-REPLIES: dict[str, type[Any]] = {"Hello": HelloReply, "SetLogLevel": SetLogLevelReply}
+REQUESTS: dict[str, type[Any]] = {
+    "Hello": Hello,
+    "GetChannels": GetChannels,
+    "WriteChannels": WriteChannels,
+    "Clear": Clear,
+    "SetLogLevel": SetLogLevel,
+    "AcquireLease": AcquireLease,
+    "RenewLease": RenewLease,
+    "ReleaseLease": ReleaseLease,
+}
+REPLIES: dict[str, type[Any]] = {
+    "Hello": HelloReply,
+    "GetChannels": GetChannelsReply,
+    "WriteChannels": WriteChannelsReply,
+    "Clear": ClearReply,
+    "SetLogLevel": SetLogLevelReply,
+    "AcquireLease": AcquireLeaseReply,
+    "RenewLease": RenewLeaseReply,
+    "ReleaseLease": ReleaseLeaseReply,
+}
 EVENTS: dict[str, type[Any]] = {"Log": LogEvent}
 
 

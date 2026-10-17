@@ -33,6 +33,7 @@ ACME_HELLO = HelloReply(
     hardware_id=bytes.fromhex("60 55 f9 c0 27 18"),
     label="bench3",
 )
+"""The `Hello` reply of a made-up Rig labelled `bench3`."""
 
 
 class ScriptedRig:
