@@ -75,12 +75,16 @@ class DisconnectedError(ItchError):
         super().__init__("Rig disconnected; run the script again.")
 
 
-class StorageFaultError(ItchError):
-    """The Rig couldn't save a setting, such as its label, to its flash."""
+class HardwareFaultError(ItchError):
+    """The Rig's Channel expander is unreachable, so the Rig holds every Channel off.
 
-    def __init__(self, rig: str, detail: str = "") -> None:
-        message = f"Rig {rig} couldn't save the setting to its flash; tell the dev."
-        super().__init__(f"{message} ({detail})" if detail else message)
+    The Rig, not the DUT, is at fault. It keeps retrying, and restores the Channels once
+    the expander is back.
+    """
+
+
+class StorageFaultError(ItchError):
+    """The Rig couldn't save a setting, such as its label, to its flash, so it kept the old one."""
 
 
 class RigNotFoundError(ItchError):
@@ -101,6 +105,7 @@ class BatchConflictError(ItchError):
 
 def rig_error(rig: str, request: str, code: int, detail: str) -> ItchError:
     """The exception for a Rig refusing `request` with error `code`."""
+    error = ItchError
     match code:
         case ErrorCode.LeaseRequired:
             return LeaseRequiredError()
@@ -121,14 +126,16 @@ def rig_error(rig: str, request: str, code: int, detail: str) -> ItchError:
             message = f"Rig {rig} is busy: its request queue is full."
         case ErrorCode.HardwareFault:
             message = (
-                f"Rig {rig} has a hardware fault: its Channel expander isn't responding. "
-                "The Rig, not the DUT, is broken; tell the dev."
+                f"Rig {rig} has a hardware fault: its Channel expander isn't responding, "
+                "so every Channel is off. The Rig, not the DUT, is broken; tell the dev."
             )
+            error = HardwareFaultError
         case ErrorCode.StorageFault:
-            return StorageFaultError(rig, detail)
+            message = f"Rig {rig} couldn't save the setting to its flash; tell the dev."
+            error = StorageFaultError
         case ErrorCode.Internal:
             message = f"Rig {rig} hit an internal error answering {request}; tell the dev."
         case _:
             message = f"Rig {rig} refused {request} with error code {code}"
             return ItchError(f"{message}: {detail}" if detail else f"{message}.")
-    return ItchError(f"{message} ({detail})" if detail else message)
+    return error(f"{message} ({detail})" if detail else message)

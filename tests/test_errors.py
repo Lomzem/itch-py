@@ -1,10 +1,12 @@
 """Rig error codes and the exception hierarchy."""
 
 import pytest
+from conftest import RunningSim
 from scripted_rig import ScriptedRig, after_connecting
 
 import itch
 from itch import (
+    HardwareFaultError,
     ItchError,
     LeaseHeldError,
     LeaseLostError,
@@ -23,7 +25,7 @@ RAISES: dict[ErrorCode, tuple[type[ItchError], str]] = {
     ErrorCode.LeaseHeld: (LeaseHeldError, "in use by"),
     ErrorCode.LeaseLost: (LeaseLostError, "taken over by"),
     ErrorCode.Busy: (ItchError, "busy"),
-    ErrorCode.HardwareFault: (ItchError, "not the DUT"),
+    ErrorCode.HardwareFault: (HardwareFaultError, "not the DUT"),
     ErrorCode.StorageFault: (StorageFaultError, "couldn't save"),
     ErrorCode.Internal: (ItchError, "internal error"),
 }
@@ -78,3 +80,13 @@ def test_every_exported_error_is_an_itch_error() -> None:
     ]
     assert len(errors) >= 10
     assert all(issubclass(error, ItchError) for error in errors)
+
+
+def test_a_rig_whose_expander_is_dead_raises_hardware_fault_error() -> None:
+    with RunningSim("--hardware-fault") as sim, Rig.connect(sim.url) as rig, rig.session():
+        with pytest.raises(HardwareFaultError, match="not the DUT"):
+            rig.set_channel(1, "on")
+        with pytest.raises(HardwareFaultError):
+            rig.clear()
+        assert set(rig.get_channels().values()) == {"off"}
+        assert rig.status().expander_faults == 1
