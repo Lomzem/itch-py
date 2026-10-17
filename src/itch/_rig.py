@@ -18,6 +18,7 @@ from itch._errors import (
     LeaseRequiredError,
     ProtocolMismatchError,
 )
+from itch._status import Status
 from itch._transport import Disconnected, Transport, open_transport
 
 REQUEST_TIMEOUT = 2.0
@@ -145,6 +146,10 @@ class Rig:
         }
         state = self._request(_wire.GetChannels(), _wire.GetChannelsReply).state
         return {channel: "on" if state & bit else "off" for channel, bit in wanted.items()}
+
+    def status(self) -> Status:
+        """Returns the Rig's uptime, reset reason, last panic, Holder and fault counters."""
+        return Status._from_reply(self._request(_wire.GetStatus(), _wire.GetStatusReply))
 
     def close(self) -> None:
         """Closes the connection, freeing the Rig for the next script. Safe to call twice.

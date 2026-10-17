@@ -8,6 +8,7 @@ from itch._errors import (
     ProtocolMismatchError,
 )
 from itch._rig import Rig, Session
+from itch._status import Status
 
 __all__ = [
     "DevelopmentBuildWarning",
@@ -17,4 +18,5 @@ __all__ = [
     "ProtocolMismatchError",
     "Rig",
     "Session",
+    "Status",
 ]
