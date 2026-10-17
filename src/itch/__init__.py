@@ -17,6 +17,7 @@ from itch._errors import (
     RigNotFoundError,
     StorageFaultError,
 )
+from itch._profile import Encoding, Profile, alias, field
 from itch._rig import Rig, RigInfo, Session, list_rigs
 from itch._status import Status
 
@@ -25,6 +26,7 @@ __all__ = [
     "BatchConflictError",
     "DevelopmentBuildWarning",
     "DisconnectedError",
+    "Encoding",
     "HardwareFaultError",
     "ItchError",
     "LeaseError",
@@ -32,6 +34,7 @@ __all__ = [
     "LeaseLostError",
     "LeaseRequiredError",
     "NotRespondingError",
+    "Profile",
     "ProfileError",
     "ProtocolMismatchError",
     "Rig",
@@ -40,5 +43,7 @@ __all__ = [
     "Session",
     "Status",
     "StorageFaultError",
+    "alias",
+    "field",
     "list_rigs",
 ]
