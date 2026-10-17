@@ -49,6 +49,7 @@ class RequestType(IntEnum):
     WriteChannels = 0x03
     Clear = 0x04
     GetStatus = 0x05
+    SetLabel = 0x06
     SetLogLevel = 0x07
     AcquireLease = 0x08
     RenewLease = 0x09
@@ -379,6 +380,36 @@ class GetStatusReply:
 # --- SetLogLevel and the Log Event ------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class SetLabel:
+    TYPE: ClassVar[RequestType] = RequestType.SetLabel
+
+    token: int
+    label: str
+
+    def encode(self, w: _Writer) -> None:
+        w.u64(self.token)
+        w.text(self.label, MAX_LABEL)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(token=r.u64(), label=r.text(MAX_LABEL))
+
+
+@dataclass(frozen=True)
+class SetLabelReply:
+    TYPE: ClassVar[RequestType] = RequestType.SetLabel
+
+    label: str
+
+    def encode(self, w: _Writer) -> None:
+        w.text(self.label, MAX_LABEL)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls(label=r.text(MAX_LABEL))
+
+
 def _log_level(r: _Reader, lowest: int) -> int:
     level = r.u8()
     if not lowest <= level <= LOG_LEVEL_DEBUG:
@@ -539,6 +570,7 @@ RequestBody = (
     | WriteChannels
     | Clear
     | GetStatus
+    | SetLabel
     | SetLogLevel
     | AcquireLease
     | RenewLease
@@ -550,6 +582,7 @@ ReplyBody = (
     | WriteChannelsReply
     | ClearReply
     | GetStatusReply
+    | SetLabelReply
     | SetLogLevelReply
     | AcquireLeaseReply
     | RenewLeaseReply
@@ -564,6 +597,7 @@ _REQUESTS: dict[int, type[RequestBody]] = {
         WriteChannels,
         Clear,
         GetStatus,
+        SetLabel,
         SetLogLevel,
         AcquireLease,
         RenewLease,
@@ -578,6 +612,7 @@ _REPLIES: dict[int, type[ReplyBody]] = {
         WriteChannelsReply,
         ClearReply,
         GetStatusReply,
+        SetLabelReply,
         SetLogLevelReply,
         AcquireLeaseReply,
         RenewLeaseReply,
