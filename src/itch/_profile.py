@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import ast
 import difflib
-from collections.abc import Sequence
+import inspect
+import textwrap
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from typing import Any, Generic, LiteralString, Never, NoReturn, TypeVar, cast, overload
 
-from itch._errors import ItchError, ProfileError
+from itch._errors import BatchConflictError, ItchError, ProfileError
 from itch._rig import CHANNELS, Position, Rig
 
 V = TypeVar("V", bound=LiteralString)
@@ -197,15 +201,32 @@ class Field(Generic[V]):
 
     def _decode(self, state: int) -> tuple[str, int]:
         """The Value and Encoding number the Channels in `state` are in."""
+        if (found := self._find(state)) is not None:
+            return found
+        channels = ", ".join(f"CH{channel}" for channel in self._channels)
+        raise ItchError(
+            f"{channels} are {_show(self._positions(state & self._mask))}, "
+            f"which isn't any Value of {self._where}."
+        )
+
+    def _find(self, state: int) -> tuple[str, int] | None:
         bits = state & self._mask
         for value, encodings in self._encodings.items():
             if bits in encodings:
                 return value, encodings.index(bits) + 1
-        channels = ", ".join(f"CH{channel}" for channel in self._channels)
-        raise ItchError(
-            f"{channels} are {_show(self._positions(bits))}, "
-            f"which isn't any Value of {self._where}."
-        )
+        return None
+
+    def _show(self, state: int) -> str:
+        """The Field's Value in `state`, such as `mode="night" (Encoding 2)`."""
+        if (found := self._find(state)) is None:
+            return f"{self.name}={_show(self._positions(state & self._mask))} (no Value)"
+        value, number = found
+        several = len(self._encodings[value]) > 1
+        return f'{self.name}="{value}"' + (f" (Encoding {number})" if several else "")
+
+    def _label(self, bits: int) -> str:
+        """The Field and Value the bits set, such as `mode="night"`."""
+        return f'{self.name}="{self._decode(bits)[0]}"'
 
     def _positions(self, bits: int) -> list[Position]:
         return ["on" if bits >> (channel - 1) & 1 else "off" for channel in self._channels]
@@ -295,21 +316,114 @@ class Profile:
     _fields: dict[str, Field[Any]]
 
     def __init_subclass__(cls) -> None:
-        cls._fields = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
-        for f in cls._fields.values():
+        own: dict[str, Field[Any]] = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
+        _check_repeated_values(cls, own)
+        for f in own.values():
             f._check()
+        cls._fields = {**getattr(super(cls, cls), "_fields", {}), **own}
 
     def __init__(self, rig: Rig) -> None:
         self._rig = rig
+        self._batch: dict[Field[Any], int] | None = None
+        """The bits of each Field set in the open batch, in the order they were first set."""
+
+    @contextmanager
+    def batch(self) -> Generator[None]:
+        """Changes several Fields together, in one write when the block ends. Needs a session.
+
+        Setting a Field twice keeps the last Value. If two Fields need a shared Channel in
+        different positions, raises `BatchConflictError` and changes nothing.
+        """
+        if self._batch is not None:
+            yield
+            return
+        self._batch = {}
+        try:
+            yield
+            batch = self._batch
+        finally:
+            self._batch = None
+        if not batch:
+            return
+        mask = values = 0
+        for field, bits in batch.items():
+            if clash := mask & field._mask & (values ^ bits):
+                bit = clash & -clash
+                other = next(f for f in batch if f._mask & bit)
+                needs, other_needs = _position(bits, bit), _position(~bits, bit)
+                raise BatchConflictError(
+                    f"CH{bit.bit_length()}: {other._label(batch[other])} needs {other_needs}, but "
+                    f"{field._label(bits)} needs {needs}. Set only one of them in a batch, or pick "
+                    "Values that agree. No Channels were changed."
+                )
+            mask |= field._mask
+            values = values & ~field._mask | bits
+        self._rig._write_channels(mask, values)
+
+    def __str__(self) -> str:
+        """Every Field's current Value on one line, for a test log."""
+        state = self._rig._read_channels()
+        return f"{type(self).__name__}({', '.join(f._show(state) for f in self._fields.values())})"
 
     def _write(self, field: Field[Any], bits: int) -> None:
-        """Writes one Field's bits. Every Field write goes through here."""
-        self._rig._write_channels(field._mask, bits)
+        """Writes one Field's bits, or keeps them for the open batch.
+
+        Every Field write goes through here.
+        """
+        if self._batch is not None:
+            self._batch[field] = bits
+        else:
+            self._rig._write_channels(field._mask, bits)
+
+
+def _check_repeated_values(cls: type[Profile], fields: dict[str, Field[Any]]) -> None:
+    """Raises `ProfileError` for a Value name listed twice in one Field.
+
+    Python keeps only the last of two equal dict keys, so this reads the Profile's source.
+    A Profile with no source file, typed into a REPL say, isn't checked.
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(cls)))
+    except (OSError, TypeError, SyntaxError):
+        return
+    body = tree.body[0].body if tree.body and isinstance(tree.body[0], ast.ClassDef) else []
+    for statement in body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+        else:
+            continue
+        if not (
+            isinstance(target, ast.Name)
+            and target.id in fields
+            and isinstance(call := statement.value, ast.Call)
+        ):
+            continue
+        values = next((k.value for k in call.keywords if k.arg == "values"), None)
+        if values is None and len(call.args) > 1:
+            values = call.args[1]
+        if not isinstance(values, ast.Dict):
+            continue
+        seen: set[str] = set()
+        for key in values.keys:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                if key.value in seen:
+                    raise ProfileError(
+                        f'{fields[target.id]._where}: the Value "{key.value}" is listed twice, '
+                        "and Python keeps only the last one. Give each Value its own name, or "
+                        "make one an alias."
+                    )
+                seen.add(key.value)
 
 
 def _show(positions: Sequence[str]) -> str:
     """Positions the way a Profile lists them: `["on", "off"]`."""
     return "[" + ", ".join(f'"{position}"' for position in positions) + "]"
+
+
+def _position(bits: int, channel_bit: int) -> Position:
+    return "on" if bits & channel_bit else "off"
 
 
 def _count(n: int, noun: str) -> str:

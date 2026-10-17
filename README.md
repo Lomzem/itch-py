@@ -155,6 +155,10 @@ print(dut.mode.get_encoding())  # mode="night" Encoding 2 of 2 ["on", "off", "on
 
 A mistake in a Profile, such as a wrong number of positions, raises a `ProfileError` saying what to fix as soon as the Profile is loaded.
 
+To change several Fields at once, set them inside `with dut.batch():`; they are written together when the block ends. `print(dut)` shows every Field's current Value.
+
+To write a Profile for your own DUT, start with [Writing a Profile](docs/writing-profiles.md) and the [Profile template](docs/profile_template.py).
+
 ## Rig logs
 
 The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger:
