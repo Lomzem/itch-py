@@ -12,6 +12,7 @@ from itch import (
     LeaseLostError,
     LeaseRequiredError,
     Rig,
+    StorageFaultError,
 )
 from itch._wire import ErrorCode, ErrorResponse
 
@@ -25,12 +26,12 @@ RAISES: dict[ErrorCode, tuple[type[ItchError], str]] = {
     ErrorCode.LeaseLost: (LeaseLostError, "taken over by"),
     ErrorCode.Busy: (ItchError, "busy"),
     ErrorCode.HardwareFault: (HardwareFaultError, "not the DUT"),
-    ErrorCode.StorageFault: (ItchError, "couldn't save"),
+    ErrorCode.StorageFault: (StorageFaultError, "couldn't save"),
     ErrorCode.Internal: (ItchError, "internal error"),
 }
 
-ON_THE_SIM = {ErrorCode.LeaseHeld, ErrorCode.LeaseLost}
-"""Codes two clients provoke on the real sim, in `test_session.py`."""
+ON_THE_SIM = {ErrorCode.LeaseHeld, ErrorCode.LeaseLost, ErrorCode.StorageFault}
+"""Codes provoked on the real sim, in `test_session.py` and `test_labels.py`."""
 
 
 def refusing(code: int, detail: str = "") -> ScriptedRig:

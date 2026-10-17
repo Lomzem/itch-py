@@ -62,6 +62,21 @@ with rig.session(takeover=True):
 
 The script you took it from gets `LeaseLostError` on its next change. A session left idle too long (a paused debugger, say) carries on as before if nobody else took the Rig.
 
+## Rename a Rig
+
+A new Rig is labelled `itch-` plus the end of its Hardware ID, such as `itch-C02718`. Give it a bench name, up to 64 bytes, inside a session; the Rig keeps it across reboots, and an empty label restores the default:
+
+```python
+with rig.session():
+    rig.set_label("bench3")
+```
+
+Or from the command line:
+
+```sh
+itch label tcp://127.0.0.1:<port> bench3
+```
+
 ## Rig logs
 
 The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger:
