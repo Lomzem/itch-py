@@ -14,6 +14,8 @@ from itch._wire import (
     ErrorResponse,
     GetChannels,
     GetChannelsReply,
+    GetStatus,
+    GetStatusReply,
     Hello,
     HelloReply,
     LogEvent,
@@ -39,6 +41,7 @@ REQUESTS: dict[str, type[Any]] = {
     "GetChannels": GetChannels,
     "WriteChannels": WriteChannels,
     "Clear": Clear,
+    "GetStatus": GetStatus,
     "SetLogLevel": SetLogLevel,
     "AcquireLease": AcquireLease,
     "RenewLease": RenewLease,
@@ -49,6 +52,7 @@ REPLIES: dict[str, type[Any]] = {
     "GetChannels": GetChannelsReply,
     "WriteChannels": WriteChannelsReply,
     "Clear": ClearReply,
+    "GetStatus": GetStatusReply,
     "SetLogLevel": SetLogLevelReply,
     "AcquireLease": AcquireLeaseReply,
     "RenewLease": RenewLeaseReply,
@@ -94,47 +98,14 @@ def test_every_message_type_has_a_vector(vectors: dict[str, Any]) -> None:
     assert covered == {t.name for t in RequestType} | EVENTS.keys()
 
 
-# The Hello reply from messages.md, one field per entry.
-HELLO_OK = {
-    "header": "81 78 56 34 12 00",
-    "protocol": "01 00",
-    "firmware_version": "05 31 2e 30 2e 30",
-    "dirty": "00",
-    "features": "00",
-    "channel_count": "10",
-    "board_revision": "01 41",
-    "hardware_id": "60 55 f9 c0 27 18",
-    "label": "0b 69 74 63 68 2d 43 30 32 37 31 38",
-}
-
-
-def hello_ok(**fields: str) -> bytes:
-    return bytes.fromhex(" ".join({**HELLO_OK, **fields}.values()))
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        pytest.param(hello_ok()[:-1], id="short body"),
-        pytest.param(hello_ok() + b"\x00", id="trailing byte"),
-        pytest.param(hello_ok(dirty="02"), id="bool not 0 or 1"),
-        pytest.param(hello_ok(label="02 c3 28"), id="invalid UTF-8"),
-        pytest.param(hello_ok(label="41" + " 61" * 65), id="label over 64 bytes"),
-        pytest.param(hello_ok(label="0c 69 74 63 68"), id="text longer than the body"),
-        pytest.param(bytes.fromhex("01 78 56 34"), id="request under 5 bytes"),
-        pytest.param(bytes.fromhex("01 78 56 34 12 00"), id="request with trailing byte"),
-        pytest.param(bytes.fromhex("3f 78 56 34 12"), id="unknown request type"),
-        pytest.param(bytes.fromhex("bf 78 56 34 12 00"), id="ok reply to an unknown type"),
-        pytest.param(b"", id="empty"),
-        pytest.param(bytes.fromhex("07 78 56 34 12 05"), id="log level above debug"),
-        pytest.param(bytes.fromhex("40 00 00 00 00 00 61"), id="log event at level off"),
-        pytest.param(bytes.fromhex("40 02 00 00 00"), id="short log event"),
-        pytest.param(bytes.fromhex("40 02 00 00 00 00 c3 28"), id="log text invalid UTF-8"),
-    ],
-)
-def test_rejects_malformed_payloads(payload: bytes) -> None:
-    with pytest.raises(DecodeError):
-        decode(payload)
+def test_rejects_malformed_vectors(vectors: dict[str, Any]) -> None:
+    known = {t.value for t in RequestType}
+    for case in vectors["malformed"]:
+        payload = bytes.fromhex(case["payload"])
+        with pytest.raises(DecodeError):
+            decode(payload)
+        unknown_request = len(payload) >= 5 and payload[0] < 0x40 and payload[0] not in known
+        assert (case["error"] == "UnknownRequest") == unknown_request, case["name"]
 
 
 def test_error_response_keeps_an_unknown_code() -> None:

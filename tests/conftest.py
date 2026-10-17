@@ -10,6 +10,7 @@ The sim and the conformance vectors come from the first of:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
@@ -48,6 +49,7 @@ def _release() -> Release:
     )
 
 
+@functools.cache
 def _sim_binary() -> Path:
     if sim := os.environ.get("ITCH_SIM"):
         return Path(sim)
@@ -70,21 +72,45 @@ def vectors() -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+class RunningSim:
+    """An `itch-sim` process, stopped on exit."""
+
+    def __init__(self) -> None:
+        self._process = subprocess.Popen([_sim_binary()], stdout=subprocess.PIPE, text=True)
+        assert self._process.stdout is not None
+        line = self._process.stdout.readline().strip()
+        if not line.startswith(READY):
+            self.stop()
+            pytest.fail(f"itch-sim didn't start: {line!r}")
+        self.url = line.removeprefix(READY)
+        """Its `tcp://host:port` name."""
+
+    def stop(self) -> None:
+        """Kills the sim, as unplugging a Rig would end its connections."""
+        self._process.kill()
+        self._process.wait()
+        if self._process.stdout:
+            self._process.stdout.close()
+
+    def __enter__(self) -> RunningSim:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+
+
 @pytest.fixture(scope="session")
 def sim() -> Iterator[str]:
     """One `itch-sim` for the whole session. Yields its `tcp://host:port` name."""
-    process = subprocess.Popen([_sim_binary()], stdout=subprocess.PIPE, text=True)
-    try:
-        assert process.stdout is not None
-        line = process.stdout.readline().strip()
-        if not line.startswith(READY):
-            pytest.fail(f"itch-sim didn't start: {line!r}")
-        yield line.removeprefix(READY)
-    finally:
-        process.kill()
-        process.wait()
-        if process.stdout:
-            process.stdout.close()
+    with RunningSim() as running:
+        yield running.url
+
+
+@pytest.fixture
+def own_sim() -> Iterator[RunningSim]:
+    """An `itch-sim` of the test's own, which it may stop."""
+    with RunningSim() as running:
+        yield running
 
 
 @pytest.fixture
