@@ -18,7 +18,7 @@ from itch._errors import (
     StorageFaultError,
 )
 from itch._profile import Encoding, Profile, alias, field
-from itch._rig import Rig, Session
+from itch._rig import Rig, RigInfo, Session, list_rigs
 from itch._status import Status
 
 __all__ = [
@@ -38,10 +38,12 @@ __all__ = [
     "ProfileError",
     "ProtocolMismatchError",
     "Rig",
+    "RigInfo",
     "RigNotFoundError",
     "Session",
     "Status",
     "StorageFaultError",
     "alias",
     "field",
+    "list_rigs",
 ]

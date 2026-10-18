@@ -21,7 +21,7 @@ fallback-version = "0.0.0"
 packages = ["src/itch"]
 
 [dependency-groups]
-dev = ["pyright", "pytest", "ruff"]
+dev = ["pyright", "pytest", "ruff", "types-pyserial"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

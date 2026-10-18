@@ -1,7 +1,7 @@
 """Transports carry whole payloads to and from one Rig.
 
-TCP reaches `itch-sim` and dev-build Rigs; USB serial comes later. Both are byte streams that
-share TAFP framing through `StreamTransport`.
+TCP reaches `itch-sim` and dev-build Rigs, and USB serial (in `_usb`) reaches the rest. Both
+are byte streams that share TAFP framing through `StreamTransport`.
 """
 
 from __future__ import annotations
@@ -106,10 +106,8 @@ class TcpTransport(StreamTransport):
         return data
 
 
-def open_transport(name: str | None) -> Transport:
-    """Opens the transport `Rig.connect` was asked for."""
-    if name is None or not name.startswith("tcp://"):
-        raise ItchError("This itch-py reaches Rigs only by tcp://host:port so far.")
+def open_tcp(name: str) -> TcpTransport:
+    """Opens a `tcp://host:port` name."""
     url = urlsplit(name)
     if url.hostname is None or url.port is None or url.path not in ("", "/"):
         raise ValueError(f"{name!r} isn't a tcp://host:port name.")
