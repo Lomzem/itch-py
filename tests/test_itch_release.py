@@ -1,5 +1,6 @@
 """Downloading the pinned `itch` release, served here from a local HTTP server."""
 
+import gc
 import hashlib
 import json
 import os
@@ -84,3 +85,13 @@ def test_fetch_refuses_an_asset_that_does_not_match_the_manifest(
 
     with pytest.raises(RuntimeError, match=SIM_ASSET):
         fetch("v9.9.9", base_url=url, cache=tmp_path / "cache")
+
+
+def test_fetch_reports_a_missing_release_and_closes_the_response(
+    server: tuple[str, Path], tmp_path: Path
+) -> None:
+    url, _ = server
+
+    with pytest.raises(RuntimeError, match="404"):
+        fetch("v9.9.9", base_url=url, cache=tmp_path / "cache")
+    gc.collect()

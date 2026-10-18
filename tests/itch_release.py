@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +64,8 @@ def _download(url: str, path: Path) -> None:
         with urllib.request.urlopen(url, timeout=60) as response:
             part.write_bytes(response.read())
     except OSError as err:
+        if isinstance(err, urllib.error.HTTPError):
+            err.close()
         raise RuntimeError(f"Couldn't download {url}: {err}") from err
     part.replace(path)
 
