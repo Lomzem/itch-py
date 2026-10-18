@@ -199,6 +199,24 @@ class Field(Generic[V]):
             )
         return encodings[number - 1]
 
+    def _value_names(self) -> list[str]:
+        """Every Value, without the aliases."""
+        return list(self._encodings)
+
+    def _encoding_count(self, value: str) -> int:
+        """How many Encodings the Value a name stands for has."""
+        return len(self._encodings[self._canonical(value)])
+
+    def _encoding_positions(self, value: str, number: int) -> list[Position]:
+        """The positions of one Encoding of a Value, in `channels` order."""
+        return self._positions(self._encoding(value, number))
+
+    def _describe(self, value: str, number: int) -> str:
+        """One Encoding of a Value, such as `mode="night" Encoding 2 of 3 ["on", "on", "off"]`."""
+        count = self._encoding_count(value)
+        positions = _show(self._encoding_positions(value, number))
+        return f'{self.name}="{value}" Encoding {number} of {count} {positions}'
+
     def _decode(self, state: int) -> tuple[str, int]:
         """The Value and Encoding number the Channels in `state` are in."""
         if (found := self._find(state)) is not None:
@@ -271,12 +289,12 @@ class FieldOnRig(Generic[V]):
     def encodings(self, value: V) -> list[Encoding[V]]:
         """Every Encoding of one Value, to set and test each in turn."""
         canonical = cast(V, self._field._canonical(value))
-        count = len(self._field._encodings[canonical])
+        count = self._field._encoding_count(canonical)
         return [Encoding(self, canonical, number) for number in range(1, count + 1)]
 
     def all_encodings(self) -> list[Encoding[V]]:
         """Every Encoding of every Value. Aliases aren't repeated."""
-        return [e for value in self._field._encodings for e in self.encodings(cast(V, value))]
+        return [e for value in self._field._value_names() for e in self.encodings(cast(V, value))]
 
     def __repr__(self) -> str:
         return f"<Field {self._field._where}>"
@@ -295,19 +313,14 @@ class Encoding(Generic[V]):
     @property
     def positions(self) -> list[Position]:
         """The Field's Channels in this Encoding, in `channels` order."""
-        field = self._field._field
-        return field._positions(field._encodings[self.value][self.number - 1])
+        return self._field._field._encoding_positions(self.value, self.number)
 
     def set(self) -> None:
         """Sets the Value using this Encoding. Needs a session."""
         self._field.set(self.value, encoding=self.number)
 
     def __repr__(self) -> str:
-        field = self._field._field
-        count = len(field._encodings[self.value])
-        return (
-            f'{field.name}="{self.value}" Encoding {self.number} of {count} {_show(self.positions)}'
-        )
+        return self._field._field._describe(self.value, self.number)
 
 
 class Profile:
