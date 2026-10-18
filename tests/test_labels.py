@@ -39,15 +39,12 @@ def test_a_label_over_64_bytes_is_refused(rig: Rig) -> None:
 
 
 def test_a_storage_fault_raises_and_keeps_the_label() -> None:
-    with (
-        RunningSim("--storage-fault") as sim,
-        Rig.connect(sim.url) as rig,
-        rig.session(),
-        pytest.raises(StorageFaultError, match="couldn't save"),
-    ):
-        rig.set_label("bench3")
     with RunningSim("--storage-fault") as sim, Rig.connect(sim.url) as rig:
+        with rig.session(), pytest.raises(StorageFaultError, match="couldn't save"):
+            rig.set_label("bench3")
         assert rig.label == SIM_DEFAULT
+        with Rig.connect(sim.url) as again:
+            assert again.label == SIM_DEFAULT
 
 
 def test_itch_label_renames_the_rig_and_releases_it(
