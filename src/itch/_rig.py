@@ -176,14 +176,14 @@ class Rig:
         self._lease = lease
         return Session(functools.partial(self._release, lease))
 
-    def set_channel(self, channel: int, position: Position) -> None:
-        """Turns one Channel on or off. Needs a session."""
-        self.set_channels({channel: position})
+    def set_channel(self, ch: int, pos: Position) -> None:
+        """Turns Channel `ch` on or off. Needs a session."""
+        self.set_channels({ch: pos})
 
     def set_channels(self, positions: Mapping[int, Position]) -> None:
         """Turns the listed Channels on or off together, in one write, leaving the rest alone.
 
-        Needs a session.
+        `positions` is `{ch: pos}`. Needs a session.
         """
         mask = values = 0
         for channel, position in positions.items():
@@ -197,17 +197,15 @@ class Rig:
         """Turns every Channel off. Needs a session."""
         self._request(_wire.Clear(self._token()), _wire.ClearReply)
 
-    def get_channel(self, channel: int) -> Position:
-        """Returns whether the Rig commands a Channel "on" or "off"."""
-        return self.get_channels([channel])[channel]
+    def get_channel(self, ch: int) -> Position:
+        """Returns whether the Rig commands Channel `ch` "on" or "off"."""
+        return self.get_channels([ch])[ch]
 
-    def get_channels(self, channels: Iterable[int] | None = None) -> dict[int, Position]:
-        """Returns `{channel: "on" | "off"}` for the listed Channels, or all 16."""
-        wanted = {
-            channel: _bit(channel) for channel in (CHANNELS if channels is None else channels)
-        }
+    def get_channels(self, chs: Iterable[int] | None = None) -> dict[int, Position]:
+        """Returns `{ch: "on" | "off"}` for the Channels in `chs`, or all 16."""
+        wanted = {ch: _bit(ch) for ch in (CHANNELS if chs is None else chs)}
         state = self._read_channels()
-        return {channel: "on" if state & bit else "off" for channel, bit in wanted.items()}
+        return {ch: "on" if state & bit else "off" for ch, bit in wanted.items()}
 
     def set_label(self, label: str) -> None:
         """Renames the Rig, at most 64 bytes of UTF-8. Needs a session.

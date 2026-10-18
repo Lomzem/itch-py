@@ -77,6 +77,7 @@ with rig.session():
 
 print(rig.get_channel(3))  # "off"
 print(rig.get_channels())  # {1: "off", 2: "off", ..., 16: "off"}
+print(rig.get_channels([1, 5]))  # {1: "off", 5: "off"}
 ```
 
 The session keeps itself alive while the script sleeps or blocks. In Jupyter or a REPL, keep it across cells with `s = rig.session()` and later `s.release()`. Leaving the session leaves the Channels as they are.

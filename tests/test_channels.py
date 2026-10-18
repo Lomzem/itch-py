@@ -44,6 +44,14 @@ def test_get_channels_reads_the_listed_channels_in_order(rig: Rig) -> None:
     assert list(rig.get_channels([16, 1]).items()) == [(16, "on"), (1, "off")]
 
 
+def test_channel_calls_take_ch_pos_and_chs_by_name(rig: Rig) -> None:
+    with rig.session():
+        rig.clear()
+        rig.set_channel(ch=7, pos="on")
+        assert rig.get_channel(ch=7) == "on"
+        assert rig.get_channels(chs=[7, 8]) == {7: "on", 8: "off"}
+
+
 def test_reads_work_outside_a_session_and_see_the_last_writes(sim: str) -> None:
     with Rig.connect(sim) as writer, writer.session():
         writer.clear()
