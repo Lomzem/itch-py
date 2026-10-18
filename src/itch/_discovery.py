@@ -74,15 +74,8 @@ def find_rig(cls: type[_Rig], name: str | None, log_level: int | None) -> _Rig:
         if _same_port(port.device, name):
             return _open(cls, port, log_level)
     for port in ports:
-        if port.hardware_id.casefold() == name.casefold():
-            rig = _open(cls, port, log_level)
-            if rig.hardware_id != port.hardware_id:
-                rig.close()
-                raise ItchError(
-                    f"The Rig on {port.device} says its Hardware ID is {rig.hardware_id}, "
-                    f"but its USB port says {port.hardware_id}; tell the dev."
-                )
-            return rig
+        if _same_hardware_id(port.hardware_id, name):
+            return _open(cls, port, log_level)
     return _find_label(cls, ports, name, log_level)
 
 
@@ -97,7 +90,7 @@ def _find_label(cls: type[_Rig], ports: list[UsbPort], label: str, log_level: in
             if rig is None:
                 continue
             if _same_label(info, label):
-                matches.append(rig)
+                matches.append(_checked(rig, port))
             else:
                 rig.close()
         if len(matches) == 1:
@@ -133,11 +126,23 @@ def _find_label(cls: type[_Rig], ports: list[UsbPort], label: str, log_level: in
 
 def _open(cls: type[_Rig], port: UsbPort, log_level: int | None) -> _Rig:
     try:
-        return cls(UsbTransport(port.device), log_level=log_level)
+        rig = cls(UsbTransport(port.device), log_level=log_level)
     except PortInUse:
         raise RigNotFoundError(
             f"Rig {port.hardware_id} on {port.device} is in use by another program."
         ) from None
+    return _checked(rig, port)
+
+
+def _checked(rig: _Rig, port: UsbPort) -> _Rig:
+    """Returns `rig`, or closes it and raises if its `Hello` names another Rig than its port."""
+    if not _same_hardware_id(rig.hardware_id, port.hardware_id):
+        rig.close()
+        raise ItchError(
+            f"The Rig on {port.device} says its Hardware ID is {rig.hardware_id}, "
+            f"but its USB port says {port.hardware_id}; tell the dev."
+        )
+    return rig
 
 
 def _probe(cls: type[_Rig], port: UsbPort) -> tuple[_Rig | None, RigInfo]:
@@ -160,6 +165,15 @@ def _same_port(device: str, name: str) -> bool:
     if sys.platform == "win32":
         return device.casefold() == name.casefold()
     return os.path.realpath(device) == os.path.realpath(name)  # Such as /dev/serial/by-id/…
+
+
+def _same_hardware_id(a: str, b: str) -> bool:
+    """Whether two Hardware IDs match, ignoring case and `:` or `-` separators."""
+
+    def bare(hardware_id: str) -> str:
+        return hardware_id.replace(":", "").replace("-", "").casefold()
+
+    return bare(a) == bare(b)
 
 
 def _same_label(info: RigInfo, label: str) -> bool:

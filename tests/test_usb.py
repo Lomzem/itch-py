@@ -148,12 +148,25 @@ def test_a_rig_in_use_by_name_says_so(
         Rig.connect(name)
 
 
-def test_a_hello_from_a_different_rig_than_the_port_lists_is_refused(bench: FakeBench) -> None:
-    port = bench.rig("/dev/ttyACM0", HW_A)
+@pytest.mark.parametrize("name", ["/dev/ttyACM0", None, HW_B, "bench3"])
+def test_a_hello_from_a_different_rig_than_the_port_lists_is_refused(
+    bench: FakeBench, name: str | None
+) -> None:
+    port = bench.rig("/dev/ttyACM0", HW_A, "bench3")
     port.hardware_id = HW_B
     with pytest.raises(ItchError, match=f"says its Hardware ID is {HW_A}"):
-        Rig.connect(HW_B)
+        Rig.connect(name)
     assert port.events[-1] == ("close", None)
+
+
+@pytest.mark.parametrize("serial", ["60-55-F9-C0-27-18", "6055f9c02718"])
+@pytest.mark.parametrize("name", ["/dev/ttyACM0", None, HW_A, "bench3"])
+def test_a_serial_written_differently_still_matches_hello(
+    bench: FakeBench, serial: str, name: str | None
+) -> None:
+    bench.rig("/dev/ttyACM0", HW_A, "bench3").hardware_id = serial
+    with Rig.connect(name) as rig:
+        assert rig.hardware_id == HW_A
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Linux and macOS report permissions by errno")

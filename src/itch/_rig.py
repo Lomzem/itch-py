@@ -105,7 +105,8 @@ class Rig:
         `tcp://host:port` reaches `itch-sim` or a dev-build Rig.
 
         Raises `RigNotFoundError` or `AmbiguousRigError`, listing the Rigs found, if `name`
-        doesn't pick out one Rig. Warns with `DevelopmentBuildWarning` if the Rig runs a
+        doesn't pick out one Rig, and `ItchError` if the USB Rig that answers has another
+        Hardware ID than its port lists. Warns with `DevelopmentBuildWarning` if the Rig runs a
         development build.
 
         The Rig's own log messages are off unless you pass `log_level`, such as

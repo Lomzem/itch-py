@@ -35,6 +35,8 @@ Rig.connect("60:55:F9:C0:27:18")
 Rig.connect("COM4")  # or "/dev/ttyACM0", or a stable /dev/serial/by-id/... link
 ```
 
+However you name it, itch-py checks that the Rig that answers has the Hardware ID its USB port lists, so a port reshuffle can't send your script to another DUT.
+
 `itch list` shows what is plugged in. Rigs another script has open show as in use, and itch-py sends them nothing, so listing or connecting doesn't disturb a running test:
 
 ```sh
