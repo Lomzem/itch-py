@@ -81,6 +81,19 @@ def test_reports_dropped_rig_logs_and_ignores_logs_from_before_the_level_is_set(
     ]
 
 
+def test_forwards_nothing_below_the_level_the_user_opted_in_to(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="itch.rig")
+    # The Rig has no level above error, so it sends errors to a client that wants critical.
+    with (
+        answering(ACME_HELLO, LogEvent(level=1, dropped=3, text="expander gone")) as peer,
+        Rig.connect(peer.url, log_level=logging.CRITICAL) as rig,
+    ):
+        read_pending_messages(rig)
+    assert caplog.records == []
+
+
 def test_closing_twice_with_rig_logs_on_is_safe(sim: str) -> None:
     rig = Rig.connect(sim, log_level=logging.DEBUG)
     rig.close()

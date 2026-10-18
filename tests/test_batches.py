@@ -2,22 +2,9 @@
 
 import pytest
 from acme_widget import AcmeWidget
-from scripted_rig import after_connecting
+from scripted_rig import channel_writes, granting_writes
 
 from itch import BatchConflictError, Profile, Rig, field
-from itch._wire import (
-    AcquireLease,
-    AcquireLeaseReply,
-    Message,
-    OkResponse,
-    ReleaseLease,
-    ReleaseLeaseReply,
-    ReplyBody,
-    Request,
-    RequestBody,
-    WriteChannels,
-    WriteChannelsReply,
-)
 
 ALL_OFF = dict.fromkeys(range(1, 17), "off")
 
@@ -31,25 +18,25 @@ def test_fields_sharing_a_channel_read_the_same_switch(rig: Rig) -> None:
         assert dut.refresh.get() == "50hz"
 
 
+def test_a_batch_changes_nothing_on_the_rig_until_the_block_ends(sim: str) -> None:
+    with Rig.connect(sim) as rig, Rig.connect(sim) as watcher, rig.session():
+        dut = AcmeWidget(rig)
+        rig.clear()
+        with dut.batch():
+            dut.resolution.set("4k")
+            dut.mode.set("night", encoding=2)
+            assert watcher.get_channels() == ALL_OFF
+        assert watcher.get_channels() == {**ALL_OFF, 1: "on", 2: "on", 4: "on", 6: "on"}
+
+
 def test_a_batch_is_one_mask_write_when_the_block_ends() -> None:
-    replies: dict[type[RequestBody], ReplyBody] = {
-        AcquireLease: AcquireLeaseReply(10_000),
-        WriteChannels: WriteChannelsReply(0),
-        ReleaseLease: ReleaseLeaseReply(),
-    }
-
-    def answer(request: Request) -> list[Message]:
-        return [OkResponse(request.request_id, replies[type(request.body)])]
-
-    with after_connecting(answer) as peer, Rig.connect(peer.url) as rig:
+    with granting_writes() as peer, Rig.connect(peer.url) as rig:
         dut = AcmeWidget(rig)
         with rig.session(), dut.batch():
             dut.resolution.set("4k")
             dut.refresh.set("50hz")
             dut.mode.set("night", encoding=2)
-            assert not [r for r in peer.requests if isinstance(r.body, WriteChannels)]
-        writes = [r.body for r in peer.requests if isinstance(r.body, WriteChannels)]
-    assert [(w.mask, w.values) for w in writes] == [(0b11_1011, 0b10_1011)]
+    assert channel_writes(peer) == [(0b11_1011, 0b10_1011)]
 
 
 def test_a_batch_sets_every_field_together(rig: Rig) -> None:

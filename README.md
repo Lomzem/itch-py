@@ -35,6 +35,8 @@ Rig.connect("60:55:F9:C0:27:18")
 Rig.connect("COM4")  # or "/dev/ttyACM0", or a stable /dev/serial/by-id/... link
 ```
 
+However you name it, itch-py checks that the Rig that answers has the Hardware ID its USB port lists, so a port reshuffle can't send your script to another DUT.
+
 `itch list` shows what is plugged in. Rigs another script has open show as in use, and itch-py sends them nothing, so listing or connecting doesn't disturb a running test:
 
 ```sh
@@ -77,6 +79,7 @@ with rig.session():
 
 print(rig.get_channel(3))  # "off"
 print(rig.get_channels())  # {1: "off", 2: "off", ..., 16: "off"}
+print(rig.get_channels([1, 5]))  # {1: "off", 5: "off"}
 ```
 
 The session keeps itself alive while the script sleeps or blocks. In Jupyter or a REPL, keep it across cells with `s = rig.session()` and later `s.release()`. Leaving the session leaves the Channels as they are.

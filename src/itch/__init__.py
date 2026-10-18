@@ -1,5 +1,6 @@
 """Drive an itch Rig's Channels from Python."""
 
+from itch._discovery import RigInfo
 from itch._errors import (
     AmbiguousRigError,
     BatchConflictError,
@@ -18,7 +19,7 @@ from itch._errors import (
     StorageFaultError,
 )
 from itch._profile import Encoding, Profile, alias, field
-from itch._rig import Rig, RigInfo, Session, list_rigs
+from itch._rig import Rig, Session, list_rigs
 from itch._status import Status
 
 __all__ = [

@@ -70,21 +70,26 @@ def test_release_is_safe_to_call_twice(rig: Rig) -> None:
         rig.clear()
 
 
-def test_the_heartbeat_renews_every_third_of_the_ttl_until_release() -> None:
-    with lease_peer(ttl_ms=300) as peer, Rig.connect(peer.url) as rig:
-        session = rig.session()
-        assert sent(peer) == [Hello, SetLogLevel, AcquireLease]
-        time.sleep(0.35)
-        session.release()
-        time.sleep(0.25)
-    acquire, *renewals, release = (request.body for request in peer.requests[2:])
-    assert isinstance(acquire, AcquireLease)
-    assert acquire.token != 0
-    assert 2 <= len(renewals) <= 4, renewals
-    assert all(r == RenewLease(acquire.token, acquire.holder) for r in renewals), renewals
-    assert release == ReleaseLease(acquire.token)
+def test_the_heartbeat_keeps_the_lease_past_several_ttls() -> None:
+    # At twice real time the Lease lapses 5 s after its last renewal, so only the heartbeat,
+    # every 10 / 3 s, keeps it. 15 s is three TTLs on the Rig's clock.
+    with (
+        RunningSim("--clock-rate", "2") as sim,
+        Rig.connect(sim.url) as first,
+        Rig.connect(sim.url) as second,
+        first.session(holder=HOLDER),
+    ):
+        first.set_channel(1, "on")
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with pytest.raises(LeaseHeldError):
+                second.session(holder="dev@laptop other.py")
+            time.sleep(0.5)
+        first.set_channel(2, "on")
+        assert second.get_channels([1, 2]) == {1: "on", 2: "on"}
 
 
+# Scripted: the sim's 10 s TTL spaces heartbeats 3.3 s apart, too far to crowd user calls.
 def test_the_heartbeat_does_not_disturb_user_requests() -> None:
     with lease_peer(ttl_ms=15) as peer, Rig.connect(peer.url) as rig, rig.session():
         deadline = time.monotonic() + 0.5
@@ -93,6 +98,7 @@ def test_the_heartbeat_does_not_disturb_user_requests() -> None:
         assert RenewLease in sent(peer)
 
 
+# Scripted: the sim never reports a token.
 def test_each_session_gets_a_fresh_random_token() -> None:
     with lease_peer(ttl_ms=10_000) as peer, Rig.connect(peer.url) as rig:
         for _ in range(3):
@@ -162,6 +168,25 @@ def test_a_lapsed_session_carries_on_when_nobody_else_took_the_rig() -> None:
         assert rig.status().holder is None
         rig.set_channel(2, "on")
         assert rig.get_channels([1, 2]) == {1: "on", 2: "on"}
+
+
+def test_a_lapsed_lease_is_reclaimed_by_someone_else() -> None:
+    # At 20 times real time the Lease lapses in 0.5 s, well before the first heartbeat.
+    with (
+        RunningSim("--clock-rate", "20") as sim,
+        Rig.connect(sim.url) as first,
+        Rig.connect(sim.url) as second,
+        first.session(holder=HOLDER),
+    ):
+        first.set_channel(1, "on")
+        time.sleep(0.6)
+        with second.session(holder="dev@laptop other.py"):
+            assert second.status().holder == "dev@laptop other.py"
+            second.set_channel(2, "on")
+            with pytest.raises(LeaseLostError) as raised:
+                first.set_channel(3, "on")
+            assert raised.value.reason == "dev@laptop other.py"
+        assert second.get_channels([1, 2, 3]) == {1: "on", 2: "on", 3: "off"}
 
 
 @pytest.mark.parametrize(
