@@ -6,8 +6,9 @@ import argparse
 import sys
 from collections.abc import Sequence
 
+from itch._discovery import rig_table
 from itch._errors import ItchError
-from itch._rig import Rig, list_rigs, rig_table
+from itch._rig import Rig, list_rigs
 
 
 def main(argv: Sequence[str] | None = None) -> int:
