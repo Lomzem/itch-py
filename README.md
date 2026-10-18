@@ -44,7 +44,10 @@ $ itch list
 PORT          HARDWARE ID        LABEL   FIRMWARE
 /dev/ttyACM0  60:55:F9:C0:27:18  bench3  1.0.0
 /dev/ttyACM1  60:55:F9:C0:27:19  in use
+/dev/ttyACM2  60:55:F9:C0:27:1A  error   Rig /dev/ttyACM2 speaks protocol 2, but this itch-py speaks protocol 1. Have the dev update the Rig or itch-py.
 ```
+
+A free Rig that itch-py can't open or talk to shows its error in the list, and connecting by label skips it. Connecting to it by port or Hardware ID raises that error.
 
 From Python, `itch.list_rigs()` returns the same list. On Linux, "in use" means another itch-py script, or any program that locks the port as itch-py does; a serial monitor such as `screen` doesn't lock it.
 

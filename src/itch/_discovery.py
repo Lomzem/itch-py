@@ -26,14 +26,16 @@ class RigInfo:
     hardware_id: str
     """Such as `60:55:F9:C0:27:18`."""
     label: str | None
-    """Such as `bench3`, or `None` if the Rig is in use."""
+    """Such as `bench3`, or `None` if the Rig is in use or failed."""
     firmware_version: str | None
-    """Such as `1.0.0`, or `None` if the Rig is in use."""
+    """Such as `1.0.0`, or `None` if the Rig is in use or failed."""
+    error: str | None = None
+    """Why itch-py couldn't ask a free Rig its label, such as a protocol mismatch."""
 
     @property
     def in_use(self) -> bool:
         """Whether another program has the Rig open, so itch-py couldn't ask its label."""
-        return self.label is None
+        return self.label is None and self.error is None
 
 
 def rig_infos(cls: type[Rig]) -> list[RigInfo]:
@@ -43,14 +45,17 @@ def rig_infos(cls: type[Rig]) -> list[RigInfo]:
 
 def rig_table(rigs: Iterable[RigInfo]) -> list[str]:
     """Lines listing `rigs` in columns under a header."""
-    rows = [("PORT", "HARDWARE ID", "LABEL", "FIRMWARE")] + [
-        (rig.port, rig.hardware_id, "in use", "")
-        if rig.label is None
-        else (rig.port, rig.hardware_id, rig.label, rig.firmware_version or "")
-        for rig in rigs
-    ]
+    rows = [("PORT", "HARDWARE ID", "LABEL", "FIRMWARE")] + [_row(rig) for rig in rigs]
     widths = [max(len(row[column]) for row in rows) for column in range(3)]
     return ["  ".join([*map(str.ljust, row[:3], widths), row[3]]).rstrip() for row in rows]
+
+
+def _row(rig: RigInfo) -> tuple[str, str, str, str]:
+    if rig.error is not None:
+        return rig.port, rig.hardware_id, "error", rig.error
+    if rig.label is None:
+        return rig.port, rig.hardware_id, "in use", ""
+    return rig.port, rig.hardware_id, rig.label, rig.firmware_version or ""
 
 
 def find_rig(cls: type[_Rig], name: str | None, log_level: int | None) -> _Rig:
@@ -146,11 +151,13 @@ def _checked(rig: _Rig, port: UsbPort) -> _Rig:
 
 
 def _probe(cls: type[_Rig], port: UsbPort) -> tuple[_Rig | None, RigInfo]:
-    """Opens a Rig to ask who it is, leaving it open. `None` if another program has it."""
+    """Opens a Rig to ask who it is, leaving it open. `None` if it is in use or fails."""
     try:
         rig = cls(UsbTransport(port.device))
     except PortInUse:
         return None, RigInfo(port.device, port.hardware_id, None, None)
+    except ItchError as err:
+        return None, RigInfo(port.device, port.hardware_id, None, None, str(err))
     return rig, RigInfo(port.device, rig.hardware_id, rig.label, rig.firmware_version)
 
 

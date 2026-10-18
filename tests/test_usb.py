@@ -1,5 +1,6 @@
 """Finding Rigs over USB, against a stubbed port list and a fake `serial.Serial`."""
 
+import dataclasses
 import errno
 import logging
 import sys
@@ -9,7 +10,15 @@ import pytest
 from fake_bench import FakeBench
 from serial.tools.list_ports_common import ListPortInfo
 
-from itch import AmbiguousRigError, ItchError, Rig, RigInfo, RigNotFoundError, list_rigs
+from itch import (
+    AmbiguousRigError,
+    ItchError,
+    ProtocolMismatchError,
+    Rig,
+    RigInfo,
+    RigNotFoundError,
+    list_rigs,
+)
 from itch._cli import main
 from itch._wire import SetLogLevel
 
@@ -205,3 +214,56 @@ def test_itch_list_says_when_no_rig_is_plugged_in(
 ) -> None:
     assert main(["list"]) == 0
     assert capsys.readouterr().out == "No Rig is plugged in.\n"
+
+
+def _broken(bench: FakeBench, device: str, hardware_id: str) -> None:
+    """Plugs in a free Rig that speaks another protocol."""
+    port = bench.rig(device, hardware_id, "bench4")
+    assert port.hello is not None
+    port.hello = dataclasses.replace(port.hello, protocol=2)
+
+
+def test_list_rigs_records_a_rig_that_fails_and_lists_the_rest(bench: FakeBench) -> None:
+    _broken(bench, "/dev/ttyACM0", HW_A)
+    bench.rig("/dev/ttyACM1", HW_B, "bench3")
+    broken, ok = list_rigs()
+    assert ok == RigInfo("/dev/ttyACM1", HW_B, "bench3", "1.0.0")
+    assert (broken.port, broken.label, broken.in_use) == ("/dev/ttyACM0", None, False)
+    assert broken.error is not None
+    assert "speaks protocol 2" in broken.error
+
+
+def test_itch_list_shows_a_rig_that_fails(
+    bench: FakeBench, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _broken(bench, "/dev/ttyACM0", HW_A)
+    bench.rig("/dev/ttyACM1", HW_B, "bench3")
+    assert main(["list"]) == 0
+    header, broken, ok = capsys.readouterr().out.splitlines()
+    assert header == "PORT          HARDWARE ID        LABEL   FIRMWARE"
+    assert broken.startswith("/dev/ttyACM0  60:55:F9:C0:27:18  error   Rig ")
+    assert "speaks protocol 2" in broken
+    assert ok == "/dev/ttyACM1  60:55:F9:C0:27:19  bench3  1.0.0"
+
+
+def test_a_label_lookup_skips_rigs_that_fail(bench: FakeBench) -> None:
+    _broken(bench, "/dev/ttyACM0", HW_A)
+    bench.rig("/dev/ttyACM1", HW_B, "bench4")
+    with Rig.connect("bench4") as rig:
+        assert rig.hardware_id == HW_B
+
+
+def test_a_label_not_found_lists_the_rigs_that_fail(bench: FakeBench) -> None:
+    _broken(bench, "/dev/ttyACM0", HW_A)
+    with pytest.raises(RigNotFoundError) as raised:
+        Rig.connect("bench4")
+    lines = str(raised.value).splitlines()
+    assert lines[0] == "Rig 'bench4' not found. Rigs found:"
+    assert lines[2].startswith("  /dev/ttyACM0  60:55:F9:C0:27:18  error  Rig ")
+
+
+@pytest.mark.parametrize("name", [None, "/dev/ttyACM0", HW_A])
+def test_naming_a_rig_that_fails_raises_its_error(bench: FakeBench, name: str | None) -> None:
+    _broken(bench, "/dev/ttyACM0", HW_A)
+    with pytest.raises(ProtocolMismatchError, match="speaks protocol 2"):
+        Rig.connect(name)

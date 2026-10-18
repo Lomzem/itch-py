@@ -424,7 +424,8 @@ def list_rigs() -> list[RigInfo]:
     """The Rigs plugged in over USB.
 
     Opens each free Rig briefly to ask its label and firmware version. Rigs other programs
-    have open are listed as in use, without disturbing them.
+    have open are listed as in use, without disturbing them. A free Rig that fails to answer
+    is listed with its `error`.
     """
     return rig_infos(Rig)
 
