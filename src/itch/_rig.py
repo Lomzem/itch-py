@@ -439,7 +439,11 @@ def _new_token() -> int:
 
 def _default_holder() -> str:
     """`user@host script.py`, each part cut short with `…` so the whole fits 64 bytes."""
-    user = _fit(getpass.getuser(), 16)
+    try:
+        user = getpass.getuser()
+    except (OSError, KeyError, ImportError):  # Such as a container UID with no passwd entry.
+        user = "unknown"
+    user = _fit(user, 16)
     host = _fit(socket.gethostname(), 24)
     script = Path(sys.argv[0]).name if sys.argv else ""
     start = f"{user}@{host} "

@@ -215,6 +215,20 @@ def test_the_default_holder_is_user_at_host_and_script(
     assert len(holder.encode()) <= 64
 
 
+@pytest.mark.parametrize("error", [OSError, KeyError, ImportError])
+def test_the_default_holder_names_an_unknown_user_when_getuser_fails(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    def getuser() -> str:
+        raise error("No username set in the environment")
+
+    monkeypatch.setattr(getpass, "getuser", getuser)
+    monkeypatch.setattr(socket, "gethostname", lambda: "bench-pc")
+    monkeypatch.setattr(sys, "argv", ["acme_test.py"])
+    with rig.session():
+        assert rig.status().holder == "unknown@bench-pc acme_test.py"
+
+
 def test_a_holder_over_64_bytes_is_a_value_error(rig: Rig) -> None:
     with pytest.raises(ValueError, match="64 bytes"):
         rig.session(holder="ü" * 33)
