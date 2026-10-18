@@ -13,13 +13,21 @@ from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
+    AcquireLease,
+    AcquireLeaseReply,
     Hello,
     HelloReply,
     Message,
     OkResponse,
+    ReleaseLease,
+    ReleaseLeaseReply,
+    ReplyBody,
     Request,
+    RequestBody,
     SetLogLevel,
     SetLogLevelReply,
+    WriteChannels,
+    WriteChannelsReply,
     decode,
     encode,
 )
@@ -98,3 +106,25 @@ def after_connecting(answer: Callable[[Request], Iterable[Message]]) -> Scripted
         return answer(request)
 
     return ScriptedRig(answer_all)
+
+
+def granting_writes() -> ScriptedRig:
+    """A peer that grants the Lease and takes every Channel write, so a test can count them.
+
+    The sim can't show how many writes reached it.
+    """
+    replies: dict[type[RequestBody], ReplyBody] = {
+        AcquireLease: AcquireLeaseReply(10_000),
+        WriteChannels: WriteChannelsReply(0),
+        ReleaseLease: ReleaseLeaseReply(),
+    }
+    return after_connecting(
+        lambda request: [OkResponse(request.request_id, replies[type(request.body)])]
+    )
+
+
+def channel_writes(peer: ScriptedRig) -> list[tuple[int, int]]:
+    """The `(mask, values)` of every Channel write `peer` was sent, oldest first."""
+    return [
+        (r.body.mask, r.body.values) for r in peer.requests if isinstance(r.body, WriteChannels)
+    ]
