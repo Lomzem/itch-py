@@ -79,6 +79,8 @@ class Rig:
         self._name = transport.name
         self._request_ids = itertools.count(1)
         self._log_level = 0  # Log Events from before SetLogLevel's reply are a backlog.
+        self._python_log_level = logging.NOTSET
+        """The user's `log_level`: Rig records below it aren't forwarded."""
         self._lock = threading.Lock()
         """Serialises requests from the script and the Session heartbeat."""
         self._lease: _Lease | None = None
@@ -261,14 +263,16 @@ class Rig:
     def _forward_log(self, event: _wire.LogEvent) -> None:
         if event.level > self._log_level:
             return
-        if event.dropped:
+        if event.dropped and self._python_log_level <= logging.WARNING:
             _RIG_LOGGER.warning("Rig %s dropped %d log messages", self._name, event.dropped)
-        _RIG_LOGGER.log(_PYTHON_LEVELS[event.level - 1], "Rig %s: %s", self._name, event.text)
+        if (level := _PYTHON_LEVELS[event.level - 1]) >= self._python_log_level:
+            _RIG_LOGGER.log(level, "Rig %s: %s", self._name, event.text)
 
     def _set_log_level(self, python_level: int | None) -> None:
         level = _rig_log_level(python_level)
         self._request(_wire.SetLogLevel(level), _wire.SetLogLevelReply)
         self._log_level = level
+        self._python_log_level = python_level or logging.NOTSET
 
     def _write_channels(self, mask: int, values: int) -> None:
         """One Mask write: the Channels in `mask` take their bits from `values`."""
