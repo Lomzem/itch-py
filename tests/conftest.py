@@ -13,9 +13,11 @@ from __future__ import annotations
 import functools
 import json
 import os
+import queue
 import subprocess
 import sys
-from collections.abc import Iterator
+import threading
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -75,11 +77,34 @@ def vectors() -> dict[str, Any]:
 class RunningSim:
     """An `itch-sim` process, stopped on exit."""
 
-    def __init__(self, *args: str) -> None:
-        """Starts the sim with command-line `args`, such as `--clock-rate 1000`."""
-        self._process = subprocess.Popen([_sim_binary(), *args], stdout=subprocess.PIPE, text=True)
-        assert self._process.stdout is not None
-        line = self._process.stdout.readline().strip()
+    def __init__(
+        self,
+        *args: str,
+        command: Sequence[str | Path] | None = None,
+        startup_timeout: float = 10,
+    ) -> None:
+        """Starts the sim with command-line `args`, such as `--clock-rate 1000`.
+
+        `command` runs instead of the sim binary, to test the startup deadline.
+        """
+        self._process = subprocess.Popen(
+            [*(command or [_sim_binary()]), *args], stdout=subprocess.PIPE, text=True
+        )
+        stdout = self._process.stdout
+        assert stdout is not None
+        # A thread, since Windows can't wait on a pipe with a timeout.
+        lines: queue.Queue[str] = queue.Queue()
+        reader = threading.Thread(target=lambda: lines.put(stdout.readline()), daemon=True)
+        reader.start()
+        try:
+            line = lines.get(timeout=startup_timeout).strip()
+        except queue.Empty:
+            self._process.kill()
+            reader.join()  # The pipe ends, so the read returns whatever the sim printed.
+            self.stop()
+            pytest.fail(
+                f"itch-sim didn't start within {startup_timeout} s: {lines.get().strip()!r}"
+            )
         if not line.startswith(READY):
             self.stop()
             pytest.fail(f"itch-sim didn't start: {line!r}")
