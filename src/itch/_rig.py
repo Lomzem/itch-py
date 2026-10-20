@@ -1,0 +1,471 @@
+from __future__ import annotations
+
+import contextlib
+import functools
+import getpass
+import itertools
+import logging
+import secrets
+import socket
+import sys
+import threading
+import time
+import warnings
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
+from types import TracebackType
+from typing import Literal, Self, TypeVar
+
+from itch import _wire
+from itch._discovery import RigInfo, find_rig, rig_infos
+from itch._errors import (
+    DevelopmentBuildWarning,
+    DisconnectedError,
+    ItchError,
+    LeaseLostError,
+    LeaseRequiredError,
+    NotRespondingError,
+    ProtocolMismatchError,
+    rig_error,
+)
+from itch._status import Status, from_reply
+from itch._transport import Disconnected, Transport, open_tcp
+
+REQUEST_TIMEOUT = 2.0
+"""Seconds to wait for each reply."""
+
+_LOG_DRAIN_TIMEOUT = 0.05
+"""Seconds `close()` waits for Log Events still on their way."""
+
+CHANNELS = range(1, 17)
+"""The Channel numbers, CH1 to CH16 as on the board."""
+
+Position = Literal["on", "off"]
+"""A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
+
+_Reply = TypeVar("_Reply", bound=_wire.ReplyBody)
+_Rig = TypeVar("_Rig", bound="Rig")
+
+_RIG_LOGGER = logging.getLogger("itch.rig")
+
+# Python logging levels for Rig log levels 1 error to 4 debug.
+_PYTHON_LEVELS = (logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG)
+
+
+def _rig_log_level(python_level: int | None) -> int:
+    """The quietest Rig log level that still sends everything at `python_level` and above."""
+    if python_level is None:
+        return 0
+    for rig_level in (4, 3, 2):
+        if python_level <= _PYTHON_LEVELS[rig_level - 1]:
+            return rig_level
+    return 1
+
+
+class Rig:
+    """A connected Rig. Get one with `Rig.connect()`, and close it when done.
+
+    ```python
+    with Rig.connect("bench3") as rig:
+        print(rig.label, rig.hardware_id, rig.firmware_version)
+        with rig.session():
+            rig.set_channel(3, "on")
+    ```
+    """
+
+    def __init__(self, transport: Transport, *, log_level: int | None = None) -> None:
+        """Takes over an open transport and sends `Hello`. Use `Rig.connect()` instead."""
+        self._transport = transport
+        self._name = transport.name
+        self._request_ids = itertools.count(1)
+        self._log_level = 0  # Log Events from before SetLogLevel's reply are a backlog.
+        self._python_log_level = logging.NOTSET
+        """The user's `log_level`: Rig records below it aren't forwarded."""
+        self._lock = threading.Lock()
+        """Serialises requests from the script and the Session heartbeat."""
+        self._lease: _Lease | None = None
+        """The current session's Lease."""
+        try:
+            hello = self._request(_wire.Hello(), _wire.HelloReply)
+            if hello.protocol != _wire.PROTOCOL:
+                raise ProtocolMismatchError(self._name, hello.protocol, _wire.PROTOCOL)
+            self._name = hello.label
+            self._set_log_level(log_level)
+        except BaseException:
+            transport.close()
+            raise
+        self._hello = hello
+        self._label = hello.label
+
+    @classmethod
+    def connect(cls, name: str | None = None, *, log_level: int | None = None) -> Self:
+        """Connects to a Rig and checks it speaks this itch-py's protocol.
+
+        `name` picks a Rig plugged in over USB by its port (`COM4`, `/dev/ttyACM0`), its
+        Hardware ID (`60:55:F9:C0:27:18`) or its label (`bench3`), ignoring case. Leave it out
+        when only one Rig is plugged in. A label lookup skips Rigs other programs have open.
+        `tcp://host:port` reaches `itch-sim` or a dev-build Rig.
+
+        Raises `RigNotFoundError` or `AmbiguousRigError`, listing the Rigs found, if `name`
+        doesn't pick out one Rig, and `ItchError` if the USB Rig that answers has another
+        Hardware ID than its port lists. Warns with `DevelopmentBuildWarning` if the Rig runs a
+        development build.
+
+        The Rig's own log messages are off unless you pass `log_level`, such as
+        `logging.INFO`. Those at that level and above then go to the `itch.rig` logger
+        whenever itch-py hears from the Rig, and when it closes. Configure Python `logging`
+        to see them.
+        """
+        if name is not None and name.startswith("tcp://"):
+            rig = cls(open_tcp(name), log_level=log_level)
+        else:
+            rig = find_rig(cls, name, log_level)
+        if notes := rig._dev_build_notes:
+            try:
+                warnings.warn(
+                    f"Rig {rig.label} runs a development build ({', '.join(notes)}). "
+                    "Have the dev flash a release build before QA use it.",
+                    DevelopmentBuildWarning,
+                    stacklevel=2,
+                )
+            except BaseException:
+                rig.close()  # The warning was turned into an error.
+                raise
+        return rig
+
+    @property
+    def label(self) -> str:
+        """The Rig's Label, such as `itch-C02718`."""
+        return self._label
+
+    @property
+    def hardware_id(self) -> str:
+        """The Rig's Hardware ID, such as `60:55:F9:C0:27:18`."""
+        return ":".join(f"{byte:02X}" for byte in self._hello.hardware_id)
+
+    @property
+    def firmware_version(self) -> str:
+        """The Rig's firmware version, such as `1.0.0`."""
+        return self._hello.firmware_version
+
+    def session(self, holder: str | None = None, *, takeover: bool = False) -> Session:
+        """Takes the Rig's Lease so this script can change its Channels.
+
+        Use it as `with rig.session():`, or keep the result and call `.release()` when done.
+        The session keeps itself alive in the background until released.
+
+        `holder` tells colleagues who holds the Rig, at most 64 bytes of UTF-8. It defaults to
+        `user@host script.py`. Raises `LeaseHeldError` if someone else holds the Rig; if their
+        script is dead, `takeover=True` takes the Rig from them.
+        """
+        if self._lease is not None:
+            raise RuntimeError(
+                f"Rig {self._name} already has a session: release it before starting another."
+            )
+        if holder is None:
+            holder = _default_holder()
+        elif (size := len(holder.encode())) > _wire.MAX_LABEL:
+            raise ValueError(
+                f"The holder {holder!r} is {size} bytes, but at most {_wire.MAX_LABEL} bytes fit."
+            )
+        reply = self._request(
+            _wire.AcquireLease(token := _new_token(), takeover, holder), _wire.AcquireLeaseReply
+        )
+        lease = _Lease(token, holder, reply.ttl_ms / 1000 / 3, self._renew)
+        self._lease = lease
+        return Session(functools.partial(self._release, lease))
+
+    def set_channel(self, ch: int, pos: Position) -> None:
+        """Turns Channel `ch` on or off. Needs a session."""
+        self.set_channels({ch: pos})
+
+    def set_channels(self, positions: Mapping[int, Position]) -> None:
+        """Turns the listed Channels on or off together, in one write, leaving the rest alone.
+
+        `positions` is `{ch: pos}`. Needs a session.
+        """
+        mask = values = 0
+        for channel, position in positions.items():
+            bit = _bit(channel)
+            mask |= bit
+            if _is_on(position):
+                values |= bit
+        self._write_channels(mask, values)
+
+    def clear(self) -> None:
+        """Turns every Channel off. Needs a session."""
+        self._request(_wire.Clear(self._token()), _wire.ClearReply)
+
+    def get_channel(self, ch: int) -> Position:
+        """Returns whether the Rig commands Channel `ch` "on" or "off"."""
+        return self.get_channels([ch])[ch]
+
+    def get_channels(self, chs: Iterable[int] | None = None) -> dict[int, Position]:
+        """Returns `{ch: "on" | "off"}` for the Channels in `chs`, or all 16."""
+        wanted = {ch: _bit(ch) for ch in (CHANNELS if chs is None else chs)}
+        state = self._read_channels()
+        return {ch: "on" if state & bit else "off" for ch, bit in wanted.items()}
+
+    def set_label(self, label: str) -> None:
+        """Renames the Rig, at most 64 bytes of UTF-8. Needs a session.
+
+        The Rig keeps the label across reboots. An empty label restores the default, such as
+        `itch-C02718`. Raises `StorageFaultError` if the Rig couldn't save it.
+        """
+        if (size := len(label.encode())) > _wire.MAX_LABEL:
+            raise ValueError(
+                f"The label {label!r} is {size} bytes, but at most {_wire.MAX_LABEL} bytes fit."
+            )
+        reply = self._request(_wire.SetLabel(self._token(), label), _wire.SetLabelReply)
+        self._label = self._name = reply.label
+
+    def status(self) -> Status:
+        """Returns the Rig's uptime, reset reason, last panic, Holder and fault counters."""
+        return from_reply(self._request(_wire.GetStatus(), _wire.GetStatusReply))
+
+    def close(self) -> None:
+        """Closes the connection, freeing the Rig for the next script. Safe to call twice.
+
+        Releases the session first, if there is one.
+        """
+        if self._lease is not None:
+            with contextlib.suppress(ItchError):
+                self._release(self._lease)
+        if self._log_level:
+            with self._lock, contextlib.suppress(Disconnected, _wire.DecodeError):
+                self._forward_pending_logs()
+            self._log_level = 0
+        self._transport.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def __repr__(self) -> str:
+        return f"<Rig {self.label} {self.hardware_id} firmware {self.firmware_version}>"
+
+    @property
+    def _dev_build_notes(self) -> list[str]:
+        notes: list[str] = []
+        if self._hello.features & _wire.FEATURE_WIFI:
+            notes.append("WiFi enabled")
+        if self._hello.dirty:
+            notes.append("built from uncommitted code")
+        return notes
+
+    def _forward_log(self, event: _wire.LogEvent) -> None:
+        if event.level > self._log_level:
+            return
+        if event.dropped and self._python_log_level <= logging.WARNING:
+            _RIG_LOGGER.warning("Rig %s dropped %d log messages", self._name, event.dropped)
+        if (level := _PYTHON_LEVELS[event.level - 1]) >= self._python_log_level:
+            _RIG_LOGGER.log(level, "Rig %s: %s", self._name, event.text)
+
+    def _set_log_level(self, python_level: int | None) -> None:
+        level = _rig_log_level(python_level)
+        self._request(_wire.SetLogLevel(level), _wire.SetLogLevelReply)
+        self._log_level = level
+        self._python_log_level = python_level or logging.NOTSET
+
+    def _write_channels(self, mask: int, values: int) -> None:
+        """One Mask write: the Channels in `mask` take their bits from `values`."""
+        self._request(_wire.WriteChannels(self._token(), mask, values), _wire.WriteChannelsReply)
+
+    def _read_channels(self) -> int:
+        """The commanded state of all 16 Channels, bit 0 for CH1."""
+        return self._request(_wire.GetChannels(), _wire.GetChannelsReply).state
+
+    def _token(self) -> int:
+        """The Lease token for a write.
+
+        Raises `LeaseRequiredError` outside a session, and `LeaseLostError` once the heartbeat
+        has seen someone else take the Rig.
+        """
+        if self._lease is None:
+            raise LeaseRequiredError
+        if self._lease.lost_to is not None:
+            raise LeaseLostError(self._name, self._lease.lost_to)
+        return self._lease.token
+
+    def _renew(self, lease: _Lease) -> None:
+        try:
+            self._request(_wire.RenewLease(lease.token, lease.holder), _wire.RenewLeaseReply)
+        except LeaseLostError as err:
+            lease.lost_to = err.reason
+        except ItchError:
+            pass  # A failed renewal shows up again on the script's next call, which reports it.
+
+    def _release(self, lease: _Lease) -> None:
+        if not lease.stop():
+            return
+        if self._lease is lease:
+            self._lease = None
+        self._request(_wire.ReleaseLease(lease.token), _wire.ReleaseLeaseReply)
+
+    def _forward_pending_logs(self) -> None:
+        """Forwards the Log Events that arrived after the last reply."""
+        deadline = time.monotonic() + _LOG_DRAIN_TIMEOUT
+        while (remaining := deadline - time.monotonic()) > 0:
+            payload = self._transport.receive(remaining)
+            if payload is None:
+                return
+            if isinstance(message := _wire.decode(payload), _wire.LogEvent):
+                self._forward_log(message)
+
+    def _request(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
+        """Sends one request and waits for its reply."""
+        with self._lock:
+            return self._exchange(body, reply)
+
+    def _exchange(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
+        """Sends `body`, and once more with a fresh `request_id` if the Rig stays silent."""
+        try:
+            for _ in range(2):
+                if (answer := self._attempt(body, reply)) is not None:
+                    return answer
+        except Disconnected as err:
+            raise DisconnectedError from err
+        except _wire.DecodeError as err:
+            raise ItchError(f"Rig {self._name} sent a malformed reply: {err}") from err
+        raise NotRespondingError(self._name)
+
+    def _attempt(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply | None:
+        """Sends `body` once and returns its reply, or `None` after `REQUEST_TIMEOUT`."""
+        request_id = next(self._request_ids) & 0xFFFF_FFFF
+        self._transport.send(_wire.encode(_wire.Request(request_id, body)))
+        deadline = time.monotonic() + REQUEST_TIMEOUT
+        while (remaining := deadline - time.monotonic()) > 0:
+            payload = self._transport.receive(remaining)
+            if payload is None:
+                break
+            message = _wire.decode(payload)
+            if isinstance(message, _wire.LogEvent):
+                self._forward_log(message)
+                continue
+            if (
+                not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
+                or message.request_id != request_id
+            ):
+                continue  # Not a reply, or a reply to an earlier request.
+            if isinstance(message, _wire.ErrorResponse):
+                raise rig_error(self._name, body.TYPE.name, message.code, message.detail)
+            if not isinstance(message.body, reply):
+                raise _wire.DecodeError(f"{type(message.body).__name__} answers {body}")
+            return message.body
+        return None
+
+
+class Session:
+    """Holds a Rig's Lease, so the script can change its Channels, until released.
+
+    Get one with `rig.session()`. A background thread renews the Lease every third of its
+    lifetime, so the script may sleep or block for as long as it likes.
+
+    If someone takes the Rig over, the script's next change raises `LeaseLostError`.
+    Leaving the `with` block never does.
+    """
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        self._release = release
+
+    def release(self) -> None:
+        """Gives up the Lease, leaving the Channels as they are. Safe to call twice."""
+        self._release()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.release()
+
+
+class _Lease:
+    """A session's Lease, renewed by a heartbeat thread until stopped."""
+
+    def __init__(
+        self, token: int, holder: str, interval: float, renew: Callable[[_Lease], None]
+    ) -> None:
+        self.token = token
+        self.holder = holder
+        self.lost_to: str | None = None
+        """Who took the Rig, once the heartbeat has seen it go."""
+        self._stopped = threading.Event()
+        self._heartbeat = threading.Thread(
+            target=self._beat, args=(interval, renew), name="itch-heartbeat", daemon=True
+        )
+        self._heartbeat.start()
+
+    def stop(self) -> bool:
+        """Stops the heartbeat, waiting out a renewal in flight. False if already stopped."""
+        if self._stopped.is_set():
+            return False
+        self._stopped.set()
+        self._heartbeat.join()
+        return True
+
+    def _beat(self, interval: float, renew: Callable[[_Lease], None]) -> None:
+        while self.lost_to is None and not self._stopped.wait(interval):
+            renew(self)
+
+
+def list_rigs() -> list[RigInfo]:
+    """The Rigs plugged in over USB.
+
+    Opens each free Rig briefly to ask its label and firmware version. Rigs other programs
+    have open are listed as in use, without disturbing them. A free Rig that fails to answer
+    is listed with its `error`.
+    """
+    return rig_infos(Rig)
+
+
+def _new_token() -> int:
+    """A random non-zero Lease token."""
+    while not (token := secrets.randbits(64)):
+        pass
+    return token
+
+
+def _default_holder() -> str:
+    """`user@host script.py`, each part cut short with `…` so the whole fits 64 bytes."""
+    try:
+        user = getpass.getuser()
+    except (OSError, KeyError, ImportError):  # Such as a container UID with no passwd entry.
+        user = "unknown"
+    user = _fit(user, 16)
+    host = _fit(socket.gethostname(), 24)
+    script = Path(sys.argv[0]).name if sys.argv else ""
+    start = f"{user}@{host} "
+    return start + _fit(script or "python", _wire.MAX_LABEL - len(start.encode()))
+
+
+def _fit(text: str, size: int) -> str:
+    """`text`, cut short with `…` on a character boundary to fit `size` bytes of UTF-8."""
+    data = text.encode()
+    if len(data) <= size:
+        return text
+    return data[: size - len("…".encode())].decode(errors="ignore") + "…"
+
+
+def _bit(channel: int) -> int:
+    # `in range` alone would let `True` through as CH1 and `1.0` through as a float.
+    if type(channel) is not int or channel not in CHANNELS:
+        raise ValueError(f"Channel {channel!r} doesn't exist: a Rig's Channels are 1 to 16.")
+    return 1 << (channel - 1)
+
+
+def _is_on(position: Position) -> bool:
+    if position not in ("on", "off"):
+        raise ValueError(f'{position!r} isn\'t a Channel position: use "on" or "off".')
+    return position == "on"
