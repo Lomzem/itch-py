@@ -183,6 +183,7 @@ Each itch-py release is tested against one `itch` release: its `itch-sim` and it
 
 | itch-py | Tested with `itch` (sim and firmware) |
 | ------- | ------------------------------------- |
+| v0.1.1 | v0.1.1 |
 | v0.1.0 | v0.1.0 |
 
 ## Development

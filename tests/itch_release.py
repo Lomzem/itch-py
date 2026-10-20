@@ -15,7 +15,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-TAG = "v0.1.0"
+TAG = "v0.1.1"
 BASE_URL = "https://github.com/Lomzem/itch/releases/download"
 SIM_ASSET = "itch-sim-windows-x86_64.exe" if sys.platform == "win32" else "itch-sim-linux-x86_64"
 VECTORS_ASSET = "vectors-v1.json"
