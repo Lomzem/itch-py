@@ -6,15 +6,10 @@ import dataclasses
 import os
 import sys
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, TypeVar
 
+from itch._connection import Connection, same_hardware_id
 from itch._errors import AmbiguousRigError, ItchError, RigNotFoundError
 from itch._usb import PortInUse, UsbPort, UsbTransport, usb_ports
-
-if TYPE_CHECKING:
-    from itch._rig import Rig
-
-_Rig = TypeVar("_Rig", bound="Rig")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -38,9 +33,9 @@ class RigInfo:
         return self.label is None and self.error is None
 
 
-def rig_infos(cls: type[Rig]) -> list[RigInfo]:
-    """The Rigs plugged in over USB, each opened briefly as a `cls` unless in use."""
-    return [_info(cls, port) for port in usb_ports()]
+def rig_infos() -> list[RigInfo]:
+    """The Rigs plugged in over USB, each opened briefly unless in use."""
+    return [_info(port) for port in usb_ports()]
 
 
 def rig_table(rigs: Iterable[RigInfo]) -> list[str]:
@@ -58,12 +53,12 @@ def _row(rig: RigInfo) -> tuple[str, str, str, str]:
     return rig.port, rig.hardware_id, rig.label, rig.firmware_version or ""
 
 
-def find_rig(cls: type[_Rig], name: str | None, log_level: int | None) -> _Rig:
-    """Opens the USB Rig `name` picks: by port, then Hardware ID, then label."""
+def find_rig(name: str | None, log_level: int | None) -> Connection:
+    """Connects to the USB Rig `name` picks: by port, then Hardware ID, then label."""
     ports = usb_ports()
     if name is None:
         if len(ports) == 1:
-            return _open(cls, ports[0], log_level)
+            return _open(ports[0], log_level)
         if not ports:
             raise RigNotFoundError(
                 "No Rig is plugged in. To use the simulator, pass its tcp://host:port address."
@@ -72,43 +67,43 @@ def find_rig(cls: type[_Rig], name: str | None, log_level: int | None) -> _Rig:
             _with_table(
                 f"{len(ports)} Rigs are plugged in; pass Rig.connect() the label, Hardware ID "
                 "or port of one:",
-                [_info(cls, port) for port in ports],
+                [_info(port) for port in ports],
             )
         )
     for port in ports:
         if _same_port(port.device, name):
-            return _open(cls, port, log_level)
+            return _open(port, log_level)
     for port in ports:
-        if _same_hardware_id(port.hardware_id, name):
-            return _open(cls, port, log_level)
-    return _find_label(cls, ports, name, log_level)
+        if same_hardware_id(port.hardware_id, name):
+            return _open(port, log_level)
+    return _find_label(ports, name, log_level)
 
 
-def _find_label(cls: type[_Rig], ports: list[UsbPort], label: str, log_level: int | None) -> _Rig:
-    """Opens every free Rig to find the one labelled `label`, and closes the rest."""
+def _find_label(ports: list[UsbPort], label: str, log_level: int | None) -> Connection:
+    """Connects to every free Rig to find the one labelled `label`, and closes the rest."""
     found: list[RigInfo] = []
-    matches: list[_Rig] = []
+    matches: list[Connection] = []
     try:
         for port in ports:
-            rig, info = _probe(cls, port)
+            connection, info = _probe(port)
             found.append(info)
-            if rig is None:
+            if connection is None:
                 continue
             if _same_label(info, label):
-                matches.append(_checked(rig, port))
+                matches.append(connection)
             else:
-                rig.close()
+                connection.close()
         if len(matches) == 1:
-            (rig,) = matches
+            (connection,) = matches
             if log_level is not None:
-                rig._set_log_level(log_level)  # pyright: ignore[reportPrivateUsage]
-            return rig
+                connection.set_log_level(log_level)
+            return connection
     except BaseException:
-        for rig in matches:
-            rig.close()
+        for connection in matches:
+            connection.close()
         raise
-    for rig in matches:
-        rig.close()
+    for connection in matches:
+        connection.close()
     if matches:
         raise AmbiguousRigError(
             _with_table(
@@ -129,42 +124,41 @@ def _find_label(cls: type[_Rig], ports: list[UsbPort], label: str, log_level: in
     raise RigNotFoundError(_with_table(f"Rig {label!r} not found{in_use}. Rigs found:", found))
 
 
-def _open(cls: type[_Rig], port: UsbPort, log_level: int | None) -> _Rig:
+def _open(port: UsbPort, log_level: int | None) -> Connection:
     try:
-        rig = cls(UsbTransport(port.device), log_level=log_level)
+        return _connect(port, log_level)
     except PortInUse:
         raise RigNotFoundError(
             f"Rig {port.hardware_id} on {port.device} is in use by another program."
         ) from None
-    return _checked(rig, port)
 
 
-def _checked(rig: _Rig, port: UsbPort) -> _Rig:
-    """Returns `rig`, or closes it and raises if its `Hello` names another Rig than its port."""
-    if not _same_hardware_id(rig.hardware_id, port.hardware_id):
-        rig.close()
-        raise ItchError(
-            f"The Rig on {port.device} says its Hardware ID is {rig.hardware_id}, "
-            f"but its USB port says {port.hardware_id}; tell the dev."
-        )
-    return rig
-
-
-def _probe(cls: type[_Rig], port: UsbPort) -> tuple[_Rig | None, RigInfo]:
-    """Opens a Rig to ask who it is, leaving it open. `None` if it is in use or fails."""
+def _probe(port: UsbPort) -> tuple[Connection | None, RigInfo]:
+    """Connects to a Rig to ask who it is, leaving it open. `None` if it is in use or fails."""
     try:
-        rig = cls(UsbTransport(port.device))
+        connection = _connect(port, None)
     except PortInUse:
         return None, RigInfo(port.device, port.hardware_id, None, None)
     except ItchError as err:
         return None, RigInfo(port.device, port.hardware_id, None, None, str(err))
-    return rig, RigInfo(port.device, rig.hardware_id, rig.label, rig.firmware_version)
+    hello = connection.hello
+    info = RigInfo(port.device, connection.hardware_id, hello.label, hello.firmware_version)
+    return connection, info
 
 
-def _info(cls: type[_Rig], port: UsbPort) -> RigInfo:
-    rig, info = _probe(cls, port)
-    if rig is not None:
-        rig.close()
+def _connect(port: UsbPort, log_level: int | None) -> Connection:
+    """Connects to the Rig on `port`, checking its `Hello` names the Rig the port lists.
+
+    Raises `PortInUse` if another program has the port open.
+    """
+    transport = UsbTransport(port.device)
+    return Connection.open(transport, hardware_id=port.hardware_id, log_level=log_level)
+
+
+def _info(port: UsbPort) -> RigInfo:
+    connection, info = _probe(port)
+    if connection is not None:
+        connection.close()
     return info
 
 
@@ -172,15 +166,6 @@ def _same_port(device: str, name: str) -> bool:
     if sys.platform == "win32":
         return device.casefold() == name.casefold()
     return os.path.realpath(device) == os.path.realpath(name)  # Such as /dev/serial/by-id/…
-
-
-def _same_hardware_id(a: str, b: str) -> bool:
-    """Whether two Hardware IDs match, ignoring case and `:` or `-` separators."""
-
-    def bare(hardware_id: str) -> str:
-        return hardware_id.replace(":", "").replace("-", "").casefold()
-
-    return bare(a) == bare(b)
 
 
 def _same_label(info: RigInfo, label: str) -> bool:

@@ -168,6 +168,18 @@ def test_a_hello_from_a_different_rig_than_the_port_lists_is_refused(
     assert port.events[-1] == ("close", None)
 
 
+def test_list_rigs_shows_a_hello_from_a_different_rig_than_the_port_lists_as_an_error(
+    bench: FakeBench,
+) -> None:
+    port = bench.rig("/dev/ttyACM0", HW_A, "bench3")
+    port.hardware_id = HW_B
+    (info,) = list_rigs()
+    assert (info.port, info.hardware_id, info.label) == ("/dev/ttyACM0", HW_B, None)
+    assert info.error is not None
+    assert f"says its Hardware ID is {HW_A}" in info.error
+    assert port.events[-1] == ("close", None)
+
+
 @pytest.mark.parametrize("serial", ["60-55-F9-C0-27-18", "6055f9c02718"])
 @pytest.mark.parametrize("name", ["/dev/ttyACM0", None, HW_A, "bench3"])
 def test_a_serial_written_differently_still_matches_hello(

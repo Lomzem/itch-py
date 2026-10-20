@@ -4,13 +4,20 @@ import pytest
 from conftest import RunningSim
 from scripted_rig import ScriptedRig, after_connecting
 
-from itch import DisconnectedError, NotRespondingError, Rig, _rig
-from itch._wire import GetChannels, GetChannelsReply, Message, OkResponse, Request
+from itch import DisconnectedError, ItchError, NotRespondingError, Rig, _connection
+from itch._wire import (
+    GetChannels,
+    GetChannelsReply,
+    Message,
+    OkResponse,
+    ReleaseLeaseReply,
+    Request,
+)
 
 
 @pytest.fixture(autouse=True)
 def short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_rig, "REQUEST_TIMEOUT", 0.2)
+    monkeypatch.setattr(_connection, "REQUEST_TIMEOUT", 0.2)
 
 
 def answering_after(silences: int) -> ScriptedRig:
@@ -58,3 +65,17 @@ def test_a_dropped_connection_fails_every_later_call_without_reconnecting(
             with pytest.raises(DisconnectedError) as raised:
                 rig.get_channels()
             assert str(raised.value) == "Rig disconnected; run the script again."
+
+
+def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
+    def answer(request: Request) -> list[Message]:
+        return [OkResponse(request.request_id, ReleaseLeaseReply())]
+
+    with (
+        after_connecting(answer) as peer,
+        Rig.connect(peer.url) as rig,
+        pytest.raises(
+            ItchError, match="Rig bench3 sent a malformed reply: ReleaseLeaseReply answers"
+        ),
+    ):
+        rig.get_channels()
