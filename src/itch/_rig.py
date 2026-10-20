@@ -2,64 +2,24 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import getpass
-import itertools
-import logging
-import secrets
-import socket
-import sys
-import threading
-import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping
-from pathlib import Path
 from types import TracebackType
-from typing import Literal, Self, TypeVar
+from typing import Literal, Self
 
 from itch import _wire
+from itch._connection import Connection
 from itch._discovery import RigInfo, find_rig, rig_infos
-from itch._errors import (
-    DevelopmentBuildWarning,
-    DisconnectedError,
-    ItchError,
-    LeaseLostError,
-    LeaseRequiredError,
-    NotRespondingError,
-    ProtocolMismatchError,
-    rig_error,
-)
+from itch._errors import DevelopmentBuildWarning, ItchError, LeaseRequiredError
+from itch._lease import Lease
 from itch._status import Status, from_reply
-from itch._transport import Disconnected, Transport, open_tcp
-
-REQUEST_TIMEOUT = 2.0
-"""Seconds to wait for each reply."""
-
-_LOG_DRAIN_TIMEOUT = 0.05
-"""Seconds `close()` waits for Log Events still on their way."""
+from itch._transport import open_tcp
 
 CHANNELS = range(1, 17)
 """The Channel numbers, CH1 to CH16 as on the board."""
 
 Position = Literal["on", "off"]
 """A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
-
-_Reply = TypeVar("_Reply", bound=_wire.ReplyBody)
-_Rig = TypeVar("_Rig", bound="Rig")
-
-_RIG_LOGGER = logging.getLogger("itch.rig")
-
-# Python logging levels for Rig log levels 1 error to 4 debug.
-_PYTHON_LEVELS = (logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG)
-
-
-def _rig_log_level(python_level: int | None) -> int:
-    """The quietest Rig log level that still sends everything at `python_level` and above."""
-    if python_level is None:
-        return 0
-    for rig_level in (4, 3, 2):
-        if python_level <= _PYTHON_LEVELS[rig_level - 1]:
-            return rig_level
-    return 1
 
 
 class Rig:
@@ -73,29 +33,12 @@ class Rig:
     ```
     """
 
-    def __init__(self, transport: Transport, *, log_level: int | None = None) -> None:
-        """Takes over an open transport and sends `Hello`. Use `Rig.connect()` instead."""
-        self._transport = transport
-        self._name = transport.name
-        self._request_ids = itertools.count(1)
-        self._log_level = 0  # Log Events from before SetLogLevel's reply are a backlog.
-        self._python_log_level = logging.NOTSET
-        """The user's `log_level`: Rig records below it aren't forwarded."""
-        self._lock = threading.Lock()
-        """Serialises requests from the script and the Session heartbeat."""
-        self._lease: _Lease | None = None
+    def __init__(self, connection: Connection) -> None:
+        """Takes over an open connection. Use `Rig.connect()` instead."""
+        self._connection = connection
+        self._label = connection.hello.label
+        self._lease: Lease | None = None
         """The current session's Lease."""
-        try:
-            hello = self._request(_wire.Hello(), _wire.HelloReply)
-            if hello.protocol != _wire.PROTOCOL:
-                raise ProtocolMismatchError(self._name, hello.protocol, _wire.PROTOCOL)
-            self._name = hello.label
-            self._set_log_level(log_level)
-        except BaseException:
-            transport.close()
-            raise
-        self._hello = hello
-        self._label = hello.label
 
     @classmethod
     def connect(cls, name: str | None = None, *, log_level: int | None = None) -> Self:
@@ -117,9 +60,9 @@ class Rig:
         to see them.
         """
         if name is not None and name.startswith("tcp://"):
-            rig = cls(open_tcp(name), log_level=log_level)
+            rig = cls(Connection.open(open_tcp(name), log_level=log_level))
         else:
-            rig = find_rig(cls, name, log_level)
+            rig = cls(find_rig(name, log_level))
         if notes := rig._dev_build_notes:
             try:
                 warnings.warn(
@@ -141,12 +84,12 @@ class Rig:
     @property
     def hardware_id(self) -> str:
         """The Rig's Hardware ID, such as `60:55:F9:C0:27:18`."""
-        return ":".join(f"{byte:02X}" for byte in self._hello.hardware_id)
+        return self._connection.hardware_id
 
     @property
     def firmware_version(self) -> str:
         """The Rig's firmware version, such as `1.0.0`."""
-        return self._hello.firmware_version
+        return self._connection.hello.firmware_version
 
     def session(self, holder: str | None = None, *, takeover: bool = False) -> Session:
         """Takes the Rig's Lease so this script can change its Channels.
@@ -160,18 +103,9 @@ class Rig:
         """
         if self._lease is not None:
             raise RuntimeError(
-                f"Rig {self._name} already has a session: release it before starting another."
+                f"Rig {self._label} already has a session: release it before starting another."
             )
-        if holder is None:
-            holder = _default_holder()
-        elif (size := len(holder.encode())) > _wire.MAX_LABEL:
-            raise ValueError(
-                f"The holder {holder!r} is {size} bytes, but at most {_wire.MAX_LABEL} bytes fit."
-            )
-        reply = self._request(
-            _wire.AcquireLease(token := _new_token(), takeover, holder), _wire.AcquireLeaseReply
-        )
-        lease = _Lease(token, holder, reply.ttl_ms / 1000 / 3, self._renew)
+        lease = Lease.acquire(self._connection, holder, takeover=takeover)
         self._lease = lease
         return Session(functools.partial(self._release, lease))
 
@@ -194,7 +128,7 @@ class Rig:
 
     def clear(self) -> None:
         """Turns every Channel off. Needs a session."""
-        self._request(_wire.Clear(self._token()), _wire.ClearReply)
+        self._connection.request(_wire.Clear(self._token()), _wire.ClearReply)
 
     def get_channel(self, ch: int) -> Position:
         """Returns whether the Rig commands Channel `ch` "on" or "off"."""
@@ -216,12 +150,13 @@ class Rig:
             raise ValueError(
                 f"The label {label!r} is {size} bytes, but at most {_wire.MAX_LABEL} bytes fit."
             )
-        reply = self._request(_wire.SetLabel(self._token(), label), _wire.SetLabelReply)
-        self._label = self._name = reply.label
+        request = _wire.SetLabel(self._token(), label)
+        reply = self._connection.request(request, _wire.SetLabelReply)
+        self._label = self._connection.name = reply.label
 
     def status(self) -> Status:
         """Returns the Rig's uptime, reset reason, last panic, Holder and fault counters."""
-        return from_reply(self._request(_wire.GetStatus(), _wire.GetStatusReply))
+        return from_reply(self._connection.request(_wire.GetStatus(), _wire.GetStatusReply))
 
     def close(self) -> None:
         """Closes the connection, freeing the Rig for the next script. Safe to call twice.
@@ -231,11 +166,7 @@ class Rig:
         if self._lease is not None:
             with contextlib.suppress(ItchError):
                 self._release(self._lease)
-        if self._log_level:
-            with self._lock, contextlib.suppress(Disconnected, _wire.DecodeError):
-                self._forward_pending_logs()
-            self._log_level = 0
-        self._transport.close()
+        self._connection.close()
 
     def __enter__(self) -> Self:
         return self
@@ -253,34 +184,22 @@ class Rig:
 
     @property
     def _dev_build_notes(self) -> list[str]:
+        hello = self._connection.hello
         notes: list[str] = []
-        if self._hello.features & _wire.FEATURE_WIFI:
+        if hello.features & _wire.FEATURE_WIFI:
             notes.append("WiFi enabled")
-        if self._hello.dirty:
+        if hello.dirty:
             notes.append("built from uncommitted code")
         return notes
 
-    def _forward_log(self, event: _wire.LogEvent) -> None:
-        if event.level > self._log_level:
-            return
-        if event.dropped and self._python_log_level <= logging.WARNING:
-            _RIG_LOGGER.warning("Rig %s dropped %d log messages", self._name, event.dropped)
-        if (level := _PYTHON_LEVELS[event.level - 1]) >= self._python_log_level:
-            _RIG_LOGGER.log(level, "Rig %s: %s", self._name, event.text)
-
-    def _set_log_level(self, python_level: int | None) -> None:
-        level = _rig_log_level(python_level)
-        self._request(_wire.SetLogLevel(level), _wire.SetLogLevelReply)
-        self._log_level = level
-        self._python_log_level = python_level or logging.NOTSET
-
     def _write_channels(self, mask: int, values: int) -> None:
         """One Mask write: the Channels in `mask` take their bits from `values`."""
-        self._request(_wire.WriteChannels(self._token(), mask, values), _wire.WriteChannelsReply)
+        request = _wire.WriteChannels(self._token(), mask, values)
+        self._connection.request(request, _wire.WriteChannelsReply)
 
     def _read_channels(self) -> int:
         """The commanded state of all 16 Channels, bit 0 for CH1."""
-        return self._request(_wire.GetChannels(), _wire.GetChannelsReply).state
+        return self._connection.request(_wire.GetChannels(), _wire.GetChannelsReply).state
 
     def _token(self) -> int:
         """The Lease token for a write.
@@ -290,76 +209,12 @@ class Rig:
         """
         if self._lease is None:
             raise LeaseRequiredError
-        if self._lease.lost_to is not None:
-            raise LeaseLostError(self._name, self._lease.lost_to)
-        return self._lease.token
+        return self._lease.token()
 
-    def _renew(self, lease: _Lease) -> None:
-        try:
-            self._request(_wire.RenewLease(lease.token, lease.holder), _wire.RenewLeaseReply)
-        except LeaseLostError as err:
-            lease.lost_to = err.reason
-        except ItchError:
-            pass  # A failed renewal shows up again on the script's next call, which reports it.
-
-    def _release(self, lease: _Lease) -> None:
-        if not lease.stop():
-            return
+    def _release(self, lease: Lease) -> None:
         if self._lease is lease:
             self._lease = None
-        self._request(_wire.ReleaseLease(lease.token), _wire.ReleaseLeaseReply)
-
-    def _forward_pending_logs(self) -> None:
-        """Forwards the Log Events that arrived after the last reply."""
-        deadline = time.monotonic() + _LOG_DRAIN_TIMEOUT
-        while (remaining := deadline - time.monotonic()) > 0:
-            payload = self._transport.receive(remaining)
-            if payload is None:
-                return
-            if isinstance(message := _wire.decode(payload), _wire.LogEvent):
-                self._forward_log(message)
-
-    def _request(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
-        """Sends one request and waits for its reply."""
-        with self._lock:
-            return self._exchange(body, reply)
-
-    def _exchange(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
-        """Sends `body`, and once more with a fresh `request_id` if the Rig stays silent."""
-        try:
-            for _ in range(2):
-                if (answer := self._attempt(body, reply)) is not None:
-                    return answer
-        except Disconnected as err:
-            raise DisconnectedError from err
-        except _wire.DecodeError as err:
-            raise ItchError(f"Rig {self._name} sent a malformed reply: {err}") from err
-        raise NotRespondingError(self._name)
-
-    def _attempt(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply | None:
-        """Sends `body` once and returns its reply, or `None` after `REQUEST_TIMEOUT`."""
-        request_id = next(self._request_ids) & 0xFFFF_FFFF
-        self._transport.send(_wire.encode(_wire.Request(request_id, body)))
-        deadline = time.monotonic() + REQUEST_TIMEOUT
-        while (remaining := deadline - time.monotonic()) > 0:
-            payload = self._transport.receive(remaining)
-            if payload is None:
-                break
-            message = _wire.decode(payload)
-            if isinstance(message, _wire.LogEvent):
-                self._forward_log(message)
-                continue
-            if (
-                not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
-                or message.request_id != request_id
-            ):
-                continue  # Not a reply, or a reply to an earlier request.
-            if isinstance(message, _wire.ErrorResponse):
-                raise rig_error(self._name, body.TYPE.name, message.code, message.detail)
-            if not isinstance(message.body, reply):
-                raise _wire.DecodeError(f"{type(message.body).__name__} answers {body}")
-            return message.body
-        return None
+        lease.release()
 
 
 class Session:
@@ -391,35 +246,6 @@ class Session:
         self.release()
 
 
-class _Lease:
-    """A session's Lease, renewed by a heartbeat thread until stopped."""
-
-    def __init__(
-        self, token: int, holder: str, interval: float, renew: Callable[[_Lease], None]
-    ) -> None:
-        self.token = token
-        self.holder = holder
-        self.lost_to: str | None = None
-        """Who took the Rig, once the heartbeat has seen it go."""
-        self._stopped = threading.Event()
-        self._heartbeat = threading.Thread(
-            target=self._beat, args=(interval, renew), name="itch-heartbeat", daemon=True
-        )
-        self._heartbeat.start()
-
-    def stop(self) -> bool:
-        """Stops the heartbeat, waiting out a renewal in flight. False if already stopped."""
-        if self._stopped.is_set():
-            return False
-        self._stopped.set()
-        self._heartbeat.join()
-        return True
-
-    def _beat(self, interval: float, renew: Callable[[_Lease], None]) -> None:
-        while self.lost_to is None and not self._stopped.wait(interval):
-            renew(self)
-
-
 def list_rigs() -> list[RigInfo]:
     """The Rigs plugged in over USB.
 
@@ -427,35 +253,7 @@ def list_rigs() -> list[RigInfo]:
     have open are listed as in use, without disturbing them. A free Rig that fails to answer
     is listed with its `error`.
     """
-    return rig_infos(Rig)
-
-
-def _new_token() -> int:
-    """A random non-zero Lease token."""
-    while not (token := secrets.randbits(64)):
-        pass
-    return token
-
-
-def _default_holder() -> str:
-    """`user@host script.py`, each part cut short with `…` so the whole fits 64 bytes."""
-    try:
-        user = getpass.getuser()
-    except (OSError, KeyError, ImportError):  # Such as a container UID with no passwd entry.
-        user = "unknown"
-    user = _fit(user, 16)
-    host = _fit(socket.gethostname(), 24)
-    script = Path(sys.argv[0]).name if sys.argv else ""
-    start = f"{user}@{host} "
-    return start + _fit(script or "python", _wire.MAX_LABEL - len(start.encode()))
-
-
-def _fit(text: str, size: int) -> str:
-    """`text`, cut short with `…` on a character boundary to fit `size` bytes of UTF-8."""
-    data = text.encode()
-    if len(data) <= size:
-        return text
-    return data[: size - len("…".encode())].decode(errors="ignore") + "…"
+    return rig_infos()
 
 
 def _bit(channel: int) -> int:
