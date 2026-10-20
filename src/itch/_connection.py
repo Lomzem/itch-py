@@ -172,7 +172,7 @@ class Connection:
             if isinstance(message, _wire.ErrorResponse):
                 raise rig_error(self.name, body.TYPE.name, message.code, message.detail)
             if not isinstance(message.body, reply):
-                raise _wire.DecodeError(f"{type(message.body).__name__} answers {body}")
+                raise _wire.DecodeError(f"{type(message.body).__name__} answers {body.TYPE.name}")
             return message.body
         return None
 

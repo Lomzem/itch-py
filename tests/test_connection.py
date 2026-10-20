@@ -75,7 +75,8 @@ def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
         after_connecting(answer) as peer,
         Rig.connect(peer.url) as rig,
         pytest.raises(
-            ItchError, match="Rig bench3 sent a malformed reply: ReleaseLeaseReply answers"
+            ItchError,
+            match=r"^Rig bench3 sent a malformed reply: ReleaseLeaseReply answers GetChannels$",
         ),
     ):
         rig.get_channels()
