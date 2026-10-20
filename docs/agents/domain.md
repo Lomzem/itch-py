@@ -1,24 +1,13 @@
-# Domain Docs
+# Domain docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+## Before exploring
 
-## Before exploring, read these
+The shared domain docs live in itch. Read its [glossary](https://github.com/Lomzem/itch/blob/main/GLOSSARY.md)
+and relevant [decisions](https://github.com/Lomzem/itch/tree/main/docs/adr/)
+before exploring the codebase. Use `../itch/GLOSSARY.md` and
+`../itch/docs/adr/` when a sibling checkout is available.
 
-- **`GLOSSARY.md`** at the repo root.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in.
-
-If these files don't exist, proceed silently. Domain documentation is created lazily through the `domain-modeling` skill when terms or decisions actually get resolved.
-
-## File structure
-
-This repo uses a single-context layout:
-
-```text
-/
-├── GLOSSARY.md
-└── docs/adr/
-    └── NNNN-<decision-slug>.md
-```
+Also read Python-specific decisions in this repo's `docs/adr/` when present.
 
 ## Use the glossary's vocabulary
 

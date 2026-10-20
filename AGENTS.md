@@ -10,7 +10,12 @@ Use the five default triage roles. Before triaging issues or changing their stat
 
 ### Domain docs
 
-Use a single-context layout: root `GLOSSARY.md` and `docs/adr/`. Before exploring the codebase, read `docs/agents/domain.md`.
+Before exploring the codebase, read `docs/agents/domain.md` for the shared glossary and decisions.
+
+## Repository split
+
+This repo owns the Python client. Firmware, simulator and protocol live in [Lomzem/itch](https://github.com/Lomzem/itch), usually checked out alongside it.
+Before changing the protocol, coordinating work across repos, or handling CI or releases, read `../itch/docs/agents/project.md`, or its [GitHub copy](https://github.com/Lomzem/itch/blob/main/docs/agents/project.md).
 
 ## Public repo
 
