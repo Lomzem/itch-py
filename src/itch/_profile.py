@@ -51,16 +51,17 @@ class Field(Generic[V]):
         self._where = "?"
         """The Profile and Field, such as `AcmeWidget.mode`, for messages."""
         self._mask = 0
-        self._encodings: dict[str, list[int]] = {}
-        """Each Value's Encodings as Channel bits, Encoding 1 first."""
+        self._encodings: dict[str, tuple[int, ...]] = {}
+        """Each Value's Encodings as Channel bits, Encoding 1 first. Set by `_check()`."""
         self._aliases: dict[str, str] = {}
+        """The Value each alias names. Set by `_check()`."""
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.name = name
         self._where = f"{owner.__name__}.{name}"
 
     def _check(self) -> None:
-        """Checks the Field as written and works out its bits. Raises `ProfileError`."""
+        """Checks the Field as written and works out its bits, once. Raises `ProfileError`."""
         where = self._where
         # Checked as written, since a Profile may have type errors its author didn't see.
         channels, values = cast(object, self._channels), cast(object, self._values)
@@ -71,14 +72,15 @@ class Field(Generic[V]):
             raise ProfileError(
                 f"{where}: `channels` is empty. List the Channels it uses, e.g. channels=[1, 2]."
             )
+        mask = 0
         for channel in self._channels:
             if type(channel) is not int or channel not in CHANNELS:
                 raise ProfileError(
                     f"{where}: Channel {channel!r} doesn't exist. Channels are numbered 1 to 16."
                 )
-            if self._mask & 1 << (channel - 1):
+            if mask & 1 << (channel - 1):
                 raise ProfileError(f"{where}: Channel {channel} is listed twice in `channels`.")
-            self._mask |= 1 << (channel - 1)
+            mask |= 1 << (channel - 1)
         example = _show(["on"] * len(self._channels))
         if not isinstance(values, dict):
             raise ProfileError(
@@ -92,37 +94,45 @@ class Field(Generic[V]):
             )
         seen: dict[int, tuple[str, str]] = {}
         """The Value and label of the Encoding already using each pattern of bits."""
+        encodings: dict[str, tuple[int, ...]] = {}
+        aliases: dict[str, str] = {}
         for value, spec in cast(dict[object, object], self._values).items():
             if not isinstance(value, str):
                 raise ProfileError(
                     f'{where}: the Value name {value!r} needs quotes, like "{value}".'
                 )
             if isinstance(spec, Alias):
-                self._aliases[value] = spec.target
+                aliases[value] = spec.target
                 continue
-            encodings = self._split(value, spec, example)
-            self._encodings[value] = []
-            for number, positions in enumerate(encodings, 1):
-                label = f'"{value}"' if len(encodings) == 1 else f'"{value}" Encoding {number}'
-                self._encodings[value].append(self._check_encoding(value, label, positions, seen))
-        for name, target in self._aliases.items():
-            if target in self._aliases:
-                final = self._aliases[target]
-                if target != name and final in self._encodings:
+            split = self._split(value, spec, example)
+            encodings[value] = tuple(
+                self._check_encoding(
+                    value,
+                    f'"{value}"' if len(split) == 1 else f'"{value}" Encoding {number}',
+                    positions,
+                    seen,
+                )
+                for number, positions in enumerate(split, 1)
+            )
+        for name, target in aliases.items():
+            if target in aliases:
+                final = aliases[target]
+                if target != name and final in encodings:
                     instead = f'"{final}" instead'
-                elif self._encodings:
-                    instead = f'a Value, such as "{next(iter(self._encodings))}"'
+                elif encodings:
+                    instead = f'a Value, such as "{next(iter(encodings))}"'
                 else:
                     instead = "a Value"
                 points = "itself" if target == name else f'"{target}", which is itself an alias'
                 raise ProfileError(
                     f'{where}: alias "{name}" points to {points}. Point it at {instead}.'
                 )
-            if target not in self._encodings:
+            if target not in encodings:
                 raise ProfileError(
                     f'{where}: alias "{name}" points to "{target}", but there is no such Value.'
-                    + _did_you_mean(target, list(self._encodings))
+                    + _did_you_mean(target, list(encodings))
                 )
+        self._mask, self._encodings, self._aliases = mask, encodings, aliases
 
     def _split(self, value: str, spec: object, example: str) -> list[list[object]]:
         """A Value's Encodings, from one list of positions or a list of such lists."""
@@ -187,38 +197,33 @@ class Field(Generic[V]):
             )
         return canonical
 
-    def _encoding(self, value: str, number: int) -> int:
-        """The bits of one Encoding of a Value."""
-        encodings = self._encodings[self._canonical(value)]
-        count = len(encodings)
+    def _select(self, value: str, number: int) -> _Selection:
+        """One Encoding of the Value a name stands for. Raises `ValueError` for a bad pick."""
+        selections = self._selections(value)
+        count = len(selections)
         if type(number) is not int or not 1 <= number <= count:
             allowed = "1" if count == 1 else f"1 to {count}"
             raise ValueError(
                 f'{self.name}: "{value}" has {_count(count, "Encoding")}, '
                 f"so `encoding` must be {allowed}, not {number!r}."
             )
-        return encodings[number - 1]
+        return selections[number - 1]
+
+    def _selections(self, value: str) -> list[_Selection]:
+        """Every Encoding of the Value a name stands for, Encoding 1 first."""
+        canonical = self._canonical(value)
+        encodings = self._encodings[canonical]
+        return [
+            _Selection(self, canonical, number, len(encodings), bits)
+            for number, bits in enumerate(encodings, 1)
+        ]
 
     def _value_names(self) -> list[str]:
         """Every Value, without the aliases."""
         return list(self._encodings)
 
-    def _encoding_count(self, value: str) -> int:
-        """How many Encodings the Value a name stands for has."""
-        return len(self._encodings[self._canonical(value)])
-
-    def _encoding_positions(self, value: str, number: int) -> list[Position]:
-        """The positions of one Encoding of a Value, in `channels` order."""
-        return self._positions(self._encoding(value, number))
-
-    def _describe(self, value: str, number: int) -> str:
-        """One Encoding of a Value, such as `mode="night" Encoding 2 of 3 ["on", "on", "off"]`."""
-        count = self._encoding_count(value)
-        positions = _show(self._encoding_positions(value, number))
-        return f'{self.name}="{value}" Encoding {number} of {count} {positions}'
-
-    def _decode(self, state: int) -> tuple[str, int]:
-        """The Value and Encoding number the Channels in `state` are in."""
+    def _decode(self, state: int) -> _Selection:
+        """The Encoding the Channels in `state` are in."""
         if (found := self._find(state)) is not None:
             return found
         channels = ", ".join(f"CH{channel}" for channel in self._channels)
@@ -227,24 +232,18 @@ class Field(Generic[V]):
             f"which isn't any Value of {self._where}."
         )
 
-    def _find(self, state: int) -> tuple[str, int] | None:
+    def _find(self, state: int) -> _Selection | None:
         bits = state & self._mask
         for value, encodings in self._encodings.items():
             if bits in encodings:
-                return value, encodings.index(bits) + 1
+                return _Selection(self, value, encodings.index(bits) + 1, len(encodings), bits)
         return None
 
     def _show(self, state: int) -> str:
         """The Field's Value in `state`, such as `mode="night" (Encoding 2)`."""
         if (found := self._find(state)) is None:
             return f"{self.name}={_show(self._positions(state & self._mask))} (no Value)"
-        value, number = found
-        several = len(self._encodings[value]) > 1
-        return f'{self.name}="{value}"' + (f" (Encoding {number})" if several else "")
-
-    def _label(self, bits: int) -> str:
-        """The Field and Value the bits set, such as `mode="night"`."""
-        return f'{self.name}="{self._decode(bits)[0]}"'
+        return found.label + (f" (Encoding {found.number})" if found.count > 1 else "")
 
     def _positions(self, bits: int) -> list[Position]:
         return ["on" if bits >> (channel - 1) & 1 else "off" for channel in self._channels]
@@ -275,7 +274,7 @@ class FieldOnRig(Generic[V]):
 
         Needs a session.
         """
-        self._dut._write(self._field, self._field._encoding(value, encoding))
+        self._dut._write(self._field._select(value, encoding))
 
     def get(self) -> V:
         """The Value the Channels are in now. An alias reads back as the Value it names."""
@@ -283,14 +282,11 @@ class FieldOnRig(Generic[V]):
 
     def get_encoding(self) -> Encoding[V]:
         """The Value and which of its Encodings the Channels are in now."""
-        value, number = self._field._decode(self._dut._rig._read_channels())
-        return Encoding(self, cast(V, value), number)
+        return Encoding(self._dut, self._field._decode(self._dut._rig._read_channels()))
 
     def encodings(self, value: V) -> list[Encoding[V]]:
         """Every Encoding of one Value, to set and test each in turn."""
-        canonical = cast(V, self._field._canonical(value))
-        count = self._field._encoding_count(canonical)
-        return [Encoding(self, canonical, number) for number in range(1, count + 1)]
+        return [Encoding(self._dut, selection) for selection in self._field._selections(value)]
 
     def all_encodings(self) -> list[Encoding[V]]:
         """Every Encoding of every Value. Aliases aren't repeated."""
@@ -303,24 +299,55 @@ class FieldOnRig(Generic[V]):
 class Encoding(Generic[V]):
     """One on/off pattern of a Value. `set()` writes exactly this pattern."""
 
-    def __init__(self, field: FieldOnRig[V], value: V, number: int) -> None:
-        self._field = field
-        self.value: V = value
+    def __init__(self, dut: Profile, selection: _Selection) -> None:
+        self._dut = dut
+        self._selection = selection
+        self.value: V = cast(V, selection.value)
         """The Value, such as `"night"`."""
-        self.number = number
+        self.number = selection.number
         """Which of the Value's Encodings this is, counting from 1."""
 
     @property
     def positions(self) -> list[Position]:
         """The Field's Channels in this Encoding, in `channels` order."""
-        return self._field._field._encoding_positions(self.value, self.number)
+        return self._selection.positions
 
     def set(self) -> None:
         """Sets the Value using this Encoding. Needs a session."""
-        self._field.set(self.value, encoding=self.number)
+        self._dut._write(self._selection)
 
     def __repr__(self) -> str:
-        return self._field._field._describe(self.value, self.number)
+        return self._selection.describe()
+
+
+class _Selection:
+    """One Encoding of one Value of a Field, with the Channel bits it sets."""
+
+    __slots__ = ("bits", "count", "field", "number", "value")
+
+    def __init__(self, field: Field[Any], value: str, number: int, count: int, bits: int) -> None:
+        self.field = field
+        self.value = value
+        """The Value, never an alias."""
+        self.number = number
+        """Which Encoding, counting from 1."""
+        self.count = count
+        """How many Encodings the Value has."""
+        self.bits = bits
+
+    @property
+    def positions(self) -> list[Position]:
+        """The Field's Channels in this Encoding, in `channels` order."""
+        return self.field._positions(self.bits)
+
+    @property
+    def label(self) -> str:
+        """The Field and Value, such as `mode="night"`."""
+        return f'{self.field.name}="{self.value}"'
+
+    def describe(self) -> str:
+        """Such as `mode="night" Encoding 2 of 3 ["on", "on", "off"]`."""
+        return f"{self.label} Encoding {self.number} of {self.count} {_show(self.positions)}"
 
 
 class Profile:
@@ -337,8 +364,8 @@ class Profile:
 
     def __init__(self, rig: Rig) -> None:
         self._rig = rig
-        self._batch: dict[Field[Any], int] | None = None
-        """The bits of each Field set in the open batch, in the order they were first set."""
+        self._batch: dict[Field[Any], _Selection] | None = None
+        """The Encoding each Field was last set to in the open batch, in first-set order."""
 
     @contextmanager
     def batch(self) -> Generator[None]:
@@ -359,18 +386,19 @@ class Profile:
         if not batch:
             return
         mask = values = 0
-        for field, bits in batch.items():
-            if clash := mask & field._mask & (values ^ bits):
+        for selection in batch.values():
+            field_mask, bits = selection.field._mask, selection.bits
+            if clash := mask & field_mask & (values ^ bits):
                 bit = clash & -clash
-                other = next(f for f in batch if f._mask & bit)
+                other = next(s for s in batch.values() if s.field._mask & bit)
                 needs, other_needs = _position(bits, bit), _position(~bits, bit)
                 raise BatchConflictError(
-                    f"CH{bit.bit_length()}: {other._label(batch[other])} needs {other_needs}, but "
-                    f"{field._label(bits)} needs {needs}. Set only one of them in a batch, or pick "
+                    f"CH{bit.bit_length()}: {other.label} needs {other_needs}, but "
+                    f"{selection.label} needs {needs}. Set only one of them in a batch, or pick "
                     "Values that agree. No Channels were changed."
                 )
-            mask |= field._mask
-            values = values & ~field._mask | bits
+            mask |= field_mask
+            values = values & ~field_mask | bits
         self._rig._write_channels(mask, values)
 
     def __str__(self) -> str:
@@ -378,15 +406,15 @@ class Profile:
         state = self._rig._read_channels()
         return f"{type(self).__name__}({', '.join(f._show(state) for f in self._fields.values())})"
 
-    def _write(self, field: Field[Any], bits: int) -> None:
-        """Writes one Field's bits, or keeps them for the open batch.
+    def _write(self, selection: _Selection) -> None:
+        """Writes one Field's Encoding, or keeps it for the open batch.
 
         Every Field write goes through here.
         """
         if self._batch is not None:
-            self._batch[field] = bits
+            self._batch[selection.field] = selection
         else:
-            self._rig._write_channels(field._mask, bits)
+            self._rig._write_channels(selection.field._mask, selection.bits)
 
 
 def _check_repeated_values(cls: type[Profile], fields: dict[str, Field[Any]]) -> None:
