@@ -302,10 +302,16 @@ class Encoding(Generic[V]):
     def __init__(self, dut: Profile, selection: _Selection) -> None:
         self._dut = dut
         self._selection = selection
-        self.value: V = cast(V, selection.value)
+
+    @property
+    def value(self) -> V:
         """The Value, such as `"night"`."""
-        self.number = selection.number
+        return cast(V, self._selection.value)
+
+    @property
+    def number(self) -> int:
         """Which of the Value's Encodings this is, counting from 1."""
+        return self._selection.number
 
     @property
     def positions(self) -> list[Position]:
