@@ -1,7 +1,7 @@
 """A stubbed USB bench: a port list for `comports()` and a fake `serial.Serial` behind it.
 
-It isn't a Rig: a free port answers `Hello` with a scripted reply, and `SetLogLevel`, and
-records what itch-py did to it.
+It isn't a Rig: a free port answers `Hello` with a scripted reply, grants `SetLogLevel`,
+`Lock` and `ReleaseLock`, and records what itch-py did to it.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import dataclasses
 import errno
 import os
 import sys
+import threading
 from typing import Any
 
 import pytest
@@ -22,7 +23,11 @@ from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
     Hello,
     HelloReply,
+    Lock,
+    LockReply,
     OkResponse,
+    ReleaseLock,
+    ReleaseLockReply,
     Request,
     SetLogLevel,
     SetLogLevelReply,
@@ -98,6 +103,7 @@ class _FakeSerial:
         self._target: FakePort | None = None
         self._decoder = FrameDecoder()
         self._out = bytearray()
+        self._replied = threading.Condition()
         self.port = port
         self.exclusive = settings.pop("exclusive", None)
         self.settings = settings
@@ -159,18 +165,32 @@ class _FakeSerial:
             request = decode(payload)
             assert isinstance(request, Request)
             self._target.requests.append(request)
-            if isinstance(request.body, Hello):
-                reply = OkResponse(request.request_id, self._target.hello)
-            else:
-                assert isinstance(request.body, SetLogLevel)
-                reply = OkResponse(request.request_id, SetLogLevelReply())
-            self._out += encode_frame(encode(reply))
+            match request.body:
+                case Hello():
+                    reply = OkResponse(request.request_id, self._target.hello)
+                case SetLogLevel():
+                    reply = OkResponse(request.request_id, SetLogLevelReply())
+                case Lock():
+                    reply = OkResponse(request.request_id, LockReply())
+                case ReleaseLock():
+                    reply = OkResponse(request.request_id, ReleaseLockReply())
+                case other:
+                    raise AssertionError(f"the fake bench can't answer {other}")
+            with self._replied:
+                self._out += encode_frame(encode(reply))
+                self._replied.notify_all()
         return len(data)
 
     def read(self, size: int = 1) -> bytes:
-        data = bytes(self._out[:size])
-        del self._out[:size]
+        """Returns up to `size` bytes, waiting up to the read timeout for some, as pySerial does."""
+        with self._replied:
+            self._replied.wait_for(lambda: self._out, self.settings["timeout"])
+            data = bytes(self._out[:size])
+            del self._out[:size]
         return data
+
+    def cancel_read(self) -> None:
+        """Does nothing: a read returns within the read timeout anyway."""
 
     def close(self) -> None:
         if self.is_open:

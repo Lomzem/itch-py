@@ -11,11 +11,10 @@
 # Use it in a test script:
 #
 #     dut = AcmeWidget(rig)
-#     with rig.session():  # hold the Rig while changing its Channels
-#         dut.resolution.set("1080p")
-#         with dut.batch():  # change several settings together, when the block ends
-#             dut.refresh.set("50hz")
-#             dut.mode.set("night")
+#     dut.resolution.set("1080p")
+#     with dut.batch():  # change several settings together, when the block ends
+#         dut.refresh.set("50hz")
+#         dut.mode.set("night")
 #     print(dut)  # every setting's current Value
 #
 # The Acme Widget is a made-up DUT.

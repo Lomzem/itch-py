@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import select
 import socket
@@ -14,7 +15,7 @@ from conftest import RunningSim
 from serial.tools import list_ports
 from serial.tools.list_ports_common import ListPortInfo
 
-from itch import Rig, RigNotFoundError
+from itch import NotRespondingError, Rig, RigNotFoundError, _connection
 
 SIM_HARDWARE_ID = "02:00:00:51:4D:01"
 
@@ -45,21 +46,24 @@ def pty_rig(own_sim: RunningSim, monkeypatch: pytest.MonkeyPatch) -> Iterator[st
 
 
 def _relay(controller: int, sim: socket.socket, stop: int) -> None:
-    while True:
-        ready, _, _ = select.select([controller, sim, stop], [], [])
-        if stop in ready:
-            return
-        if controller in ready:
-            sim.sendall(os.read(controller, 4096))
-        if sim in ready:
-            os.write(controller, sim.recv(4096))
+    """Relays bytes between the pty and the sim until stopped or the sim stops."""
+    with contextlib.suppress(OSError):  # The sim stopped: the Rig goes silent, as over USB.
+        while True:
+            ready, _, _ = select.select([controller, sim, stop], [], [])
+            if stop in ready:
+                return
+            if controller in ready:
+                sim.sendall(os.read(controller, 4096))
+            if sim in ready:
+                if not (data := sim.recv(4096)):
+                    return
+                os.write(controller, data)
 
 
 def test_talks_to_a_rig_through_pyserial(pty_rig: str) -> None:
     with Rig.connect() as rig:
         assert rig.hardware_id == SIM_HARDWARE_ID
-        with rig.session():
-            rig.set_channel(3, "on")
+        rig.set_channel(3, "on")
         assert rig.get_channel(3) == "on"
 
 
@@ -67,3 +71,14 @@ def test_a_port_another_itch_py_has_open_is_in_use(pty_rig: str) -> None:
     with Rig.connect(pty_rig), pytest.raises(RigNotFoundError, match="in use by another program"):
         Rig.connect(SIM_HARDWARE_ID)
     Rig.connect(pty_rig).close()
+
+
+def test_over_usb_silence_after_a_network_change_is_unexpected(
+    pty_rig: str, own_sim: RunningSim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_connection, "REQUEST_TIMEOUT", 0.2)
+    with Rig.connect(lock=False) as rig:
+        rig.set_wifi("ExampleRigNet", "example-passphrase")
+        own_sim.stop()
+        with pytest.raises(NotRespondingError):
+            rig.get_channels()

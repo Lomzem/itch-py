@@ -18,43 +18,19 @@ class ProtocolMismatchError(ItchError):
 
 
 class DevelopmentBuildWarning(UserWarning):
-    """The Rig runs a development build: WiFi enabled, or built from uncommitted code."""
+    """The Rig runs a development build, built from uncommitted code."""
 
 
-class LeaseError(ItchError):
-    """A problem with the Lease that lets a script change a Rig's Channels."""
+class LockedError(ItchError):
+    """Someone else holds the Rig's Lock, so it refused a change or a Lock.
 
-
-class LeaseHeldError(LeaseError):
-    """Someone else holds the Rig. `.holder` says who."""
-
-    def __init__(self, rig: str, holder: str) -> None:
-        super().__init__(
-            f"Rig {rig} is in use by {holder}. If that script is dead, take the Rig over "
-            "with `rig.session(takeover=True)`."
-        )
-        self.holder = holder
-
-
-class LeaseLostError(LeaseError):
-    """Someone else took the Rig from this session. `.reason` names the new Holder.
-
-    The session no longer controls the Rig, so its changes fail until it is released.
+    The message names the Holder for people to read. Read `rig.status().holder` to get it as data.
     """
 
-    def __init__(self, rig: str, reason: str) -> None:
+    def __init__(self, rig: str, detail: str) -> None:
         super().__init__(
-            f"Rig {rig} was taken over by {reason}; this script no longer controls it."
-        )
-        self.reason = reason
-
-
-class LeaseRequiredError(LeaseError):
-    """A write outside a Session."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "Changing Channels needs a session: wrap the writes in `with rig.session():`."
+            f"Rig {rig} is Locked by {detail or 'another Holder'}; pass take_over=True to take "
+            "it over."
         )
 
 
@@ -66,13 +42,27 @@ class NotRespondingError(ItchError):
 
 
 class DisconnectedError(ItchError):
-    """The connection to the Rig closed, as after an unplug or a reboot. itch-py doesn't reconnect.
+    """The connection to the Rig closed, as after an unplug, a reboot or a Wi-Fi drop.
 
-    A reboot turns every Channel off, so the script must start again.
+    itch-py doesn't reconnect. Connecting again under the same Holder picks the Lock back up. A
+    reboot turns every Channel off, so check them, or run the script again.
+
+    After the Rig accepts new Wi-Fi or address settings over the network, the connection is
+    expected to end, and the message says to reconnect after the network change.
     """
 
-    def __init__(self) -> None:
-        super().__init__("Rig disconnected; run the script again.")
+    def __init__(self, rig: str, *, network_changed: bool = False) -> None:
+        if network_changed:
+            message = (
+                f"Rig {rig} disconnected after its network settings changed, as expected; "
+                "reconnect after the network change."
+            )
+        else:
+            message = (
+                f"Rig {rig} disconnected; reconnect, or run the script again. The same Holder "
+                "picks its Lock back up."
+            )
+        super().__init__(message)
 
 
 class HardwareFaultError(ItchError):
@@ -107,19 +97,10 @@ def rig_error(rig: str, request: str, code: int, detail: str) -> ItchError:
     """The exception for a Rig refusing `request` with error `code`."""
     error = ItchError
     match code:
-        case ErrorCode.LeaseRequired:
-            return LeaseRequiredError()
-        case ErrorCode.LeaseHeld:
-            return LeaseHeldError(rig, detail)
-        case ErrorCode.LeaseLost:
-            return LeaseLostError(rig, detail)
+        case ErrorCode.Locked:
+            return LockedError(rig, detail)
         case ErrorCode.UnknownRequest:
             message = f"Rig {rig} doesn't know {request}. Have the dev update the Rig or itch-py."
-        case ErrorCode.UnsupportedVersion:
-            message = (
-                f"Rig {rig} can't answer {request} in this protocol version. "
-                "Have the dev update the Rig or itch-py."
-            )
         case ErrorCode.Malformed:
             message = f"Rig {rig} couldn't decode {request}. This is an itch-py bug; tell the dev."
         case ErrorCode.Busy:

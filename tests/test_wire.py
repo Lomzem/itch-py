@@ -1,12 +1,11 @@
 """The private wire codec against the conformance vectors, plus strict decoding."""
 
+import ipaddress
 from typing import Any, get_type_hints
 
 import pytest
 
 from itch._wire import (
-    AcquireLease,
-    AcquireLeaseReply,
     Clear,
     ClearReply,
     DecodeError,
@@ -18,19 +17,23 @@ from itch._wire import (
     GetStatusReply,
     Hello,
     HelloReply,
+    Lock,
+    LockReply,
     LogEvent,
     Message,
     OkResponse,
-    ReleaseLease,
-    ReleaseLeaseReply,
-    RenewLease,
-    RenewLeaseReply,
+    ReleaseLock,
+    ReleaseLockReply,
     Request,
     RequestType,
+    SetAddress,
+    SetAddressReply,
     SetLabel,
     SetLabelReply,
     SetLogLevel,
     SetLogLevelReply,
+    SetWifi,
+    SetWifiReply,
     UnknownEvent,
     WriteChannels,
     WriteChannelsReply,
@@ -46,9 +49,10 @@ REQUESTS: dict[str, type[Any]] = {
     "GetStatus": GetStatus,
     "SetLabel": SetLabel,
     "SetLogLevel": SetLogLevel,
-    "AcquireLease": AcquireLease,
-    "RenewLease": RenewLease,
-    "ReleaseLease": ReleaseLease,
+    "Lock": Lock,
+    "ReleaseLock": ReleaseLock,
+    "SetWifi": SetWifi,
+    "SetAddress": SetAddress,
 }
 REPLIES: dict[str, type[Any]] = {
     "Hello": HelloReply,
@@ -58,18 +62,24 @@ REPLIES: dict[str, type[Any]] = {
     "GetStatus": GetStatusReply,
     "SetLabel": SetLabelReply,
     "SetLogLevel": SetLogLevelReply,
-    "AcquireLease": AcquireLeaseReply,
-    "RenewLease": RenewLeaseReply,
-    "ReleaseLease": ReleaseLeaseReply,
+    "Lock": LockReply,
+    "ReleaseLock": ReleaseLockReply,
+    "SetWifi": SetWifiReply,
+    "SetAddress": SetAddressReply,
 }
 EVENTS: dict[str, type[Any]] = {"Log": LogEvent}
 
 
 def body(cls: type[Any], fields: dict[str, Any]) -> Any:
-    """Builds a message body from its vector fields, named as in the byte tables."""
+    """Builds a message body from its vector fields, named as in the byte tables.
+
+    Byte fields are hex, except IPv4 addresses, which are dotted quads.
+    """
     hints = get_type_hints(cls)
     for name, value in fields.items():
-        if hints[name] is bytes:
+        if hints[name] is bytes and "." in value:
+            fields[name] = ipaddress.IPv4Address(value).packed
+        elif hints[name] is bytes:
             fields[name] = bytes.fromhex(value)
         elif hints[name] is int and isinstance(value, str):
             fields[name] = int(value, 16)

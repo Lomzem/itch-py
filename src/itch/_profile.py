@@ -270,10 +270,7 @@ class FieldOnRig(Generic[V]):
         self._dut = dut
 
     def set(self, value: V, encoding: int = 1) -> None:
-        """Sets a Value. A Value with several Encodings uses Encoding 1 unless you pick another.
-
-        Needs a session.
-        """
+        """Sets a Value. A Value with several Encodings uses Encoding 1 unless you pick another."""
         self._dut._write(self._field._select(value, encoding))
 
     def get(self) -> V:
@@ -319,7 +316,7 @@ class Encoding(Generic[V]):
         return self._selection.positions
 
     def set(self) -> None:
-        """Sets the Value using this Encoding. Needs a session."""
+        """Sets the Value using this Encoding."""
         self._dut._write(self._selection)
 
     def __repr__(self) -> str:
@@ -375,7 +372,7 @@ class Profile:
 
     @contextmanager
     def batch(self) -> Generator[None]:
-        """Changes several Fields together, in one write when the block ends. Needs a session.
+        """Changes several Fields together, in one write when the block ends.
 
         Setting a Field twice keeps the last Value. If two Fields need a shared Channel in
         different positions, raises `BatchConflictError` and changes nothing.

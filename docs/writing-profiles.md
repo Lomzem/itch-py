@@ -97,14 +97,12 @@ from acme_widget import AcmeWidget
 
 with Rig.connect("tcp://127.0.0.1:<port>") as rig:  # see the README to connect
     dut = AcmeWidget(rig)
-    with rig.session():  # hold the Rig while changing its Channels
-        dut.resolution.set("1080p")
-        dut.mode.set("night")
+    dut.resolution.set("1080p")
+    dut.mode.set("night")
     print(dut)  # AcmeWidget(resolution="1080p", ..., mode="night" (Encoding 1))
     print(dut.resolution.get())  # "1080p"
 ```
 
-- `with rig.session():` reserves the Rig for your script. Every `set()` must be inside it; reading with `get()` or `print(dut)` works anywhere.
 - `dut.<field>.set("<value>")` changes a setting. In VS Code, type `set("` and the Values appear in a list; a misspelt one is underlined in red.
 - `dut.<field>.get()` reads the setting back.
 - `print(dut)` shows every Field's current Value on one line, handy for a test log. A Field whose Channels match none of its Values shows its positions and `(no Value)`.
@@ -130,17 +128,16 @@ Some DUTs accept the same choice through several switch patterns, for example wh
 `dut.mode.set("night")` uses the first Encoding. To test each one, so a broken one can't hide behind a working one:
 
 ```python
-    with rig.session():
-        for encoding in dut.mode.encodings("night"):  # every Encoding of "night"
-            encoding.set()
-            print("testing", encoding)  # mode="night" Encoding 2 of 3 ["on", "off", "on"]
-            ...  # check the DUT here
+    for encoding in dut.mode.encodings("night"):  # every Encoding of "night"
+        encoding.set()
+        print("testing", encoding)  # mode="night" Encoding 2 of 3 ["on", "off", "on"]
+        ...  # check the DUT here
 
-        for encoding in dut.mode.all_encodings():  # every Encoding of every Value
-            encoding.set()
-            ...
+    for encoding in dut.mode.all_encodings():  # every Encoding of every Value
+        encoding.set()
+        ...
 
-        dut.mode.set("night", encoding=3)  # re-run one Encoding from a failure report
+    dut.mode.set("night", encoding=3)  # re-run one Encoding from a failure report
 ```
 
 ## Another name for a Value
@@ -174,11 +171,10 @@ Setting one changes the other: after `dut.picture.set("bars")`, `dut.tone.get()`
 To change several Fields at the same moment, put the `set()` calls in a batch:
 
 ```python
-    with rig.session():
-        with dut.batch():  # nothing changes until the block ends
-            dut.resolution.set("4k")
-            dut.refresh.set("50hz")
-            dut.mode.set("night")  # agrees with refresh on CH4, so this is fine
+    with dut.batch():  # nothing changes until the block ends
+        dut.resolution.set("4k")
+        dut.refresh.set("50hz")
+        dut.mode.set("night")  # agrees with refresh on CH4, so this is fine
 ```
 
 When the block ends, all the Channels change in one go. Setting the same Field twice in a batch keeps the last Value.

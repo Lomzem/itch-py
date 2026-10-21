@@ -1,11 +1,13 @@
 """A scripted TCP peer for the few cases `itch-sim` can't produce.
 
 It isn't a Rig: it answers each request with the messages `answer` returns, maybe none, and
-records what it was sent.
+records what it was sent. An answer given as `bytes` is sent as a raw payload, for replies this
+itch-py's codec can't encode. An `answer` that raises `HangUp` closes the connection instead.
 """
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import threading
 from collections.abc import Callable, Iterable
@@ -13,17 +15,16 @@ from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
-    AcquireLease,
-    AcquireLeaseReply,
     Hello,
     HelloReply,
+    Lock,
+    LockReply,
     Message,
     OkResponse,
-    ReleaseLease,
-    ReleaseLeaseReply,
+    ReleaseLock,
+    ReleaseLockReply,
     ReplyBody,
     Request,
-    RequestBody,
     SetLogLevel,
     SetLogLevelReply,
     WriteChannels,
@@ -33,10 +34,9 @@ from itch._wire import (
 )
 
 ACME_HELLO = HelloReply(
-    protocol=1,
+    protocol=3,
     firmware_version="1.0.0",
     dirty=False,
-    features=0,
     channel_count=16,
     board_revision="A",
     hardware_id=bytes.fromhex("60 55 f9 c0 27 18"),
@@ -45,8 +45,12 @@ ACME_HELLO = HelloReply(
 """The `Hello` reply of a made-up Rig labelled `bench3`."""
 
 
+class HangUp(Exception):
+    """Raised by an `answer` to close the connection without replying."""
+
+
 class ScriptedRig:
-    def __init__(self, answer: Callable[[Request], Iterable[Message]]) -> None:
+    def __init__(self, answer: Callable[[Request], Iterable[Message | bytes]]) -> None:
         self._answer = answer
         self._listener = socket.create_server(("127.0.0.1", 0))
         host, port = self._listener.getsockname()
@@ -71,56 +75,61 @@ class ScriptedRig:
     def _serve(self) -> None:
         connection, _ = self._listener.accept()
         decoder = FrameDecoder()
-        with connection:
+        with connection, contextlib.suppress(HangUp):
             while data := connection.recv(4096):
                 for payload in decoder.feed(data):
                     request = decode(payload)
                     assert isinstance(request, Request)
                     self.requests.append(request)
                     for reply in self._answer(request):
-                        connection.sendall(encode_frame(encode(reply)))
+                        payload = reply if isinstance(reply, bytes) else encode(reply)
+                        connection.sendall(encode_frame(payload))
         self.closed.set()
 
 
+_GRANTED: dict[type[object], ReplyBody] = {
+    SetLogLevel: SetLogLevelReply(),
+    Lock: LockReply(),
+    ReleaseLock: ReleaseLockReply(),
+}
+"""The replies to the requests every connection sends besides `Hello`."""
+
+
 def answering(hello: HelloReply, *before: Message) -> ScriptedRig:
-    """A peer that answers `SetLogLevel` and, to anything else, `hello`.
+    """A peer that answers `SetLogLevel`, `Lock` and `ReleaseLock`, and anything else `hello`.
 
     It sends `before` ahead of every reply.
     """
 
     def answer(request: Request) -> list[Message]:
-        reply = SetLogLevelReply() if isinstance(request.body, SetLogLevel) else hello
+        reply = _GRANTED.get(type(request.body), hello)
         return [*before, OkResponse(request.request_id, reply)]
 
     return ScriptedRig(answer)
 
 
 def after_connecting(answer: Callable[[Request], Iterable[Message]]) -> ScriptedRig:
-    """A peer that answers `Hello` (as `bench3`) and `SetLogLevel`, and the rest with `answer`."""
+    """A peer that answers `Hello` (as `bench3`), `SetLogLevel`, `Lock` and `ReleaseLock`.
+
+    It answers the rest with `answer`.
+    """
 
     def answer_all(request: Request) -> Iterable[Message]:
         if isinstance(request.body, Hello):
             return [OkResponse(request.request_id, ACME_HELLO)]
-        if isinstance(request.body, SetLogLevel):
-            return [OkResponse(request.request_id, SetLogLevelReply())]
+        if (granted := _GRANTED.get(type(request.body))) is not None:
+            return [OkResponse(request.request_id, granted)]
         return answer(request)
 
     return ScriptedRig(answer_all)
 
 
 def granting_writes() -> ScriptedRig:
-    """A peer that grants the Lease and takes every Channel write, so a test can count them.
+    """A peer that takes every Channel write, so a test can count them.
 
     The sim can't show how many writes reached it.
     """
-    replies: dict[type[RequestBody], ReplyBody] = {
-        AcquireLease: AcquireLeaseReply(10_000),
-        WriteChannels: WriteChannelsReply(0),
-        ReleaseLease: ReleaseLeaseReply(),
-    }
-    return after_connecting(
-        lambda request: [OkResponse(request.request_id, replies[type(request.body)])]
-    )
+    return after_connecting(lambda request: [OkResponse(request.request_id, WriteChannelsReply(0))])
 
 
 def channel_writes(peer: ScriptedRig) -> list[tuple[int, int]]:

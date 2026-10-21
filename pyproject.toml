@@ -3,7 +3,11 @@ name = "itch"
 description = "Drive an itch Rig's Channels from Python."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pyserial>=3.5", "typing_extensions"]
+dependencies = [
+    "pyserial>=3.5",
+    "typing_extensions",
+    "zeroconf>=0.151.5,<0.152",
+]
 dynamic = ["version"]
 
 [project.scripts]

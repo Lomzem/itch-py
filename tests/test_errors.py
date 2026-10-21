@@ -5,33 +5,22 @@ from conftest import RunningSim
 from scripted_rig import ScriptedRig, after_connecting
 
 import itch
-from itch import (
-    HardwareFaultError,
-    ItchError,
-    LeaseHeldError,
-    LeaseLostError,
-    LeaseRequiredError,
-    Rig,
-    StorageFaultError,
-)
+from itch import HardwareFaultError, ItchError, LockedError, Rig, StorageFaultError
 from itch._wire import ErrorCode, ErrorResponse
 
 # What each code raises, and a phrase its message must hold.
 RAISES: dict[ErrorCode, tuple[type[ItchError], str]] = {
     ErrorCode.UnknownRequest: (ItchError, "doesn't know GetChannels"),
-    ErrorCode.UnsupportedVersion: (ItchError, "update the Rig or itch-py"),
     ErrorCode.Malformed: (ItchError, "itch-py bug"),
-    ErrorCode.LeaseRequired: (LeaseRequiredError, "needs a session"),
-    ErrorCode.LeaseHeld: (LeaseHeldError, "in use by"),
-    ErrorCode.LeaseLost: (LeaseLostError, "taken over by"),
     ErrorCode.Busy: (ItchError, "busy"),
     ErrorCode.HardwareFault: (HardwareFaultError, "not the DUT"),
     ErrorCode.StorageFault: (StorageFaultError, "couldn't save"),
     ErrorCode.Internal: (ItchError, "internal error"),
+    ErrorCode.Locked: (LockedError, "is Locked by"),
 }
 
-ON_THE_SIM = {ErrorCode.LeaseHeld, ErrorCode.LeaseLost, ErrorCode.StorageFault}
-"""Codes provoked on the real sim, in `test_session.py` and `test_labels.py`."""
+ON_THE_SIM = {ErrorCode.StorageFault}
+"""Codes provoked on the real sim, in `test_labels.py`."""
 
 
 def refusing(code: int, detail: str = "") -> ScriptedRig:
@@ -61,6 +50,18 @@ def test_an_error_reply_raises_its_exception(code: ErrorCode) -> None:
     assert "error code" not in message, message
 
 
+def test_a_locked_refusal_names_the_rig_and_the_holder_from_its_detail() -> None:
+    with (
+        refusing(ErrorCode.Locked, "alice@ws3") as peer,
+        Rig.connect(peer.url) as rig,
+        pytest.raises(LockedError) as raised,
+    ):
+        rig.set_channel(1, "on")
+    assert str(raised.value) == (
+        "Rig bench3 is Locked by alice@ws3; pass take_over=True to take it over."
+    )
+
+
 def test_an_unknown_error_code_raises_a_generic_itch_error() -> None:
     with (
         refusing(99, "new trouble") as peer,
@@ -83,7 +84,7 @@ def test_every_exported_error_is_an_itch_error() -> None:
 
 
 def test_a_rig_whose_expander_is_dead_raises_hardware_fault_error() -> None:
-    with RunningSim("--hardware-fault") as sim, Rig.connect(sim.url) as rig, rig.session():
+    with RunningSim("--hardware-fault") as sim, Rig.connect(sim.url) as rig:
         with pytest.raises(HardwareFaultError, match="not the DUT"):
             rig.set_channel(1, "on")
         with pytest.raises(HardwareFaultError):
