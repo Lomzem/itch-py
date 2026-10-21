@@ -39,6 +39,7 @@ MAX_LAST_PANIC = 64
 LINK_CONNECTED = 2
 """`GetStatus` `link` runs from 0 off through 1 joining to 2 connected."""
 
+ADDRESS_DHCP = 0
 ADDRESS_STATIC = 1
 """`mode` is 0 DHCP or 1 static."""
 

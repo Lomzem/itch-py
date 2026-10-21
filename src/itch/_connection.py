@@ -66,6 +66,9 @@ class Connection:
         """Why the connection ended, kept so every later request fails the same way."""
         self._closing = False
         """Set once `close()` starts."""
+        self._network_changed = False
+        """Set once the Rig accepts a network change over TCP, after which it may drop the
+        connection or go silent as it moves."""
         self._log_level = 0  # Log Events from before SetLogLevel's reply are a backlog.
         self._python_log_level = logging.NOTSET
         """The user's `log_level`: Rig records below it aren't forwarded."""
@@ -142,15 +145,24 @@ class Connection:
         with self._lock:
             self._exchange(_wire.SetLogLevel(level), _wire.SetLogLevelReply, apply)
 
-    def request(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
+    def request(
+        self, body: _wire.RequestBody, reply: type[_Reply], *, changes_network: bool = False
+    ) -> _Reply:
         """Sends `body` and returns its reply, sending it once more if the Rig stays silent.
 
         Raises the `ItchError` for the Rig's error reply, `NotRespondingError` if it stays
         silent, `DisconnectedError` if the connection fails or has failed, and `ItchError` for
         a malformed reply.
+
+        `changes_network` marks `body` as changing the Rig's network settings. Once the Rig
+        accepts it over TCP, the connection is expected to end: a later drop, or silence, raises
+        `DisconnectedError` saying to reconnect after the network change.
         """
+        on_reply = None
+        if changes_network and isinstance(self._transport, TcpTransport):
+            on_reply = self._mark_network_changed
         with self._lock:
-            return self._exchange(body, reply)
+            return self._exchange(body, reply, on_reply)
 
     def close(self) -> None:
         """Forwards the Log Events still on their way, then closes. Safe to call twice.
@@ -202,6 +214,11 @@ class Connection:
         for _ in range(2):
             if (answer := self._attempt(body, reply, on_reply)) is not None:
                 return answer
+        with self._state:
+            if self._network_changed:  # The Rig moved without closing the connection.
+                if self._disconnect is None:
+                    self._disconnect = Disconnected("silent since the network change")
+                self._raise_if_disconnected()
         raise NotRespondingError(self.name)
 
     def _attempt(
@@ -237,12 +254,16 @@ class Connection:
                 self._outstanding = None  # Also when sending fails or is interrupted.
 
     def _raise_if_disconnected(self) -> None:
-        """Raises `DisconnectedError` once the connection has ended. Call it holding `_state`.
-
-        The seam for telling an expected disconnect, such as after a network change, apart.
-        """
+        """Raises `DisconnectedError` once the connection has ended. Call it holding `_state`."""
         if self._disconnect is not None:
-            raise DisconnectedError from self._disconnect
+            raise DisconnectedError(
+                self.name, network_changed=self._network_changed
+            ) from self._disconnect
+
+    def _mark_network_changed(self) -> None:
+        """Expects the connection to end. Run by the reader, holding `_state`, as it takes the
+        reply to a network change."""
+        self._network_changed = True
 
     def _disconnected(self, err: Exception) -> None:
         """Remembers that the connection ended, and wakes the request waiting on it."""
