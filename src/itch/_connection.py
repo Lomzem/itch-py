@@ -29,9 +29,6 @@ REQUEST_TIMEOUT = 2.0
 _LOG_DRAIN_TIMEOUT = 0.05
 """Seconds `close()` waits for Log Events still on their way."""
 
-_READ_POLL = 0.05
-"""Seconds the reader waits for each payload before checking whether to stop."""
-
 _Reply = TypeVar("_Reply", bound=_wire.ReplyBody)
 
 _RIG_LOGGER = logging.getLogger("itch.rig")
@@ -71,7 +68,6 @@ class Connection:
         """The user's `log_level`: Rig records below it aren't forwarded."""
         self._events: queue.SimpleQueue[tuple[_wire.LogEvent, int] | None] = queue.SimpleQueue()
         """Log Events for the dispatcher, each with the user's level when it arrived."""
-        self._stop_reading = threading.Event()
         self._reader = threading.Thread(
             target=self._read, name=f"itch reader {self.name}", daemon=True
         )
@@ -183,7 +179,7 @@ class Connection:
                 if self._disconnect is None:
                     self._disconnect = Disconnected("closed")
                 self._state.notify_all()
-            self._stop_reading.set()
+            self._transport.stop()  # Wakes the reader.
             self._join(self._reader)
             self._transport.close()
 
@@ -272,10 +268,10 @@ class Connection:
     def _read(self) -> None:
         """The reader thread: receives every payload until `close()` or a disconnect."""
         try:
-            while not self._stop_reading.is_set():
-                if (payload := self._transport.receive(_READ_POLL)) is not None:
-                    with self._state:
-                        self._route(payload)
+            while True:
+                payload = self._transport.receive()
+                with self._state:
+                    self._route(payload)
         except Exception as err:  # Disconnected, or a bug that mustn't leave a request waiting.
             self._disconnected(err)
 

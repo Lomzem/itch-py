@@ -72,13 +72,16 @@ class UsbTransport(StreamTransport):
     def close(self) -> None:
         self._serial.close()
 
+    def _wake(self) -> None:
+        self._serial.cancel_read()
+
     def _write(self, data: bytes) -> None:
         try:
             self._serial.write(data)
         except (serial.SerialException, OSError) as err:
             raise Disconnected from err
 
-    def _read(self, timeout: float) -> bytes:
+    def _read(self) -> bytes:
         try:
             return self._serial.read(self._serial.in_waiting or 1)
         except (serial.SerialException, OSError) as err:
