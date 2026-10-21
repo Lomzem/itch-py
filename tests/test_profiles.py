@@ -1,5 +1,7 @@
 """Profiles: driving a DUT by its settings against `itch-sim`."""
 
+import re
+
 import pytest
 from acme_widget import AcmeWidget
 from scripted_rig import channel_writes, granting_writes
@@ -108,9 +110,12 @@ def test_get_raises_when_the_channels_match_no_value(dut: AcmeWidget) -> None:
         dut.mode.get_encoding()
 
 
-def test_assigning_to_a_field_points_to_set(dut: AcmeWidget) -> None:
-    with pytest.raises(AttributeError, match=r'Use dut\.mode\.set\("cinema"\) to change mode\.'):
+def test_assigning_to_a_field_points_to_apply_and_set(dut: AcmeWidget) -> None:
+    with pytest.raises(AttributeError) as raised:
         dut.mode = "cinema"  # pyright: ignore[reportAttributeAccessIssue]
+    message = str(raised.value)
+    assert re.search(r'dut\.apply\(mode="cinema"\)', message), message
+    assert re.search(r'dut\.mode\.set\("cinema"\)', message), message
     assert repr(dut.mode) == "<Field AcmeWidget.mode>"
 
 
