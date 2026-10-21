@@ -88,6 +88,6 @@ def test_a_rig_whose_expander_is_dead_raises_hardware_fault_error() -> None:
         with pytest.raises(HardwareFaultError, match="not the DUT"):
             rig.set_channel(1, "on")
         with pytest.raises(HardwareFaultError):
-            rig.clear()
+            rig.clear_all()
         assert set(rig.get_channels().values()) == {"off"}
         assert rig.status().expander_faults == 1

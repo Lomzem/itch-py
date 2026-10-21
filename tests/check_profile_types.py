@@ -10,7 +10,7 @@ from typing import Literal, assert_type
 
 from acme_widget import AcmeWidget
 
-from itch import Encoding, Profile, Rig, field
+from itch import ChannelState, Encoding, Profile, Rig, ch, field
 
 # Value completion offers exactly the names a parameter of this type accepts, aliases included.
 Mode = Literal["cinema", "sport", "night", "movie"]
@@ -60,3 +60,13 @@ class Mistakes(Profile):
     encoding_typo = field(channels=[1], values={"a": [["on"], ["of"]]})  # pyright: ignore[reportArgumentType]
     one_string = field(channels=[1, 2], values={"a": "on off"})  # pyright: ignore[reportArgumentType]
     unquoted_name = field(channels=[1], values={720: ["on"]})  # pyright: ignore[reportArgumentType]
+
+
+def channel_verbs_with_computed_channel_numbers(rig: Rig) -> None:
+    for n in range(1, 17):
+        rig.set(n)
+        rig.clear(n)
+        rig.write(set=[n], clear=[n + 1])
+    assert_type(rig.get(3), bool)
+    assert_type(rig.get_all(), ChannelState)
+    assert_type(ch(1, 5), int)

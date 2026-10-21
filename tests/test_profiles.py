@@ -13,7 +13,7 @@ ALL_OFF = dict.fromkeys(range(1, 17), "off")
 
 def test_setting_a_field_writes_its_channels_and_leaves_the_rest(rig: Rig) -> None:
     dut = AcmeWidget(rig)
-    rig.clear()
+    rig.clear_all()
     rig.set_channels({1: "on", 16: "on"})
     dut.resolution.set("1080p")
     assert rig.get_channels() == {**ALL_OFF, 1: "off", 2: "on", 16: "on"}
@@ -91,7 +91,7 @@ def test_an_unknown_value_suggests_the_closest_and_lists_the_choices(rig: Rig) -
         r'mode has no Value "nigth"\. Did you mean "night"\? '
         r'Choose one of: "cinema", "sport", "night", "movie"\.'
     )
-    rig.clear()
+    rig.clear_all()
     with pytest.raises(ValueError, match=message):
         dut.mode.set("nigth")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match=message):
@@ -112,7 +112,7 @@ def test_an_encoding_out_of_range_says_how_many_there_are(
     rig: Rig, value: str, encoding: int, message: str
 ) -> None:
     dut = AcmeWidget(rig)
-    rig.clear()
+    rig.clear_all()
     with pytest.raises(ValueError, match=message):
         dut.mode.set(value, encoding=encoding)  # pyright: ignore[reportArgumentType]
     assert rig.get_channels() == ALL_OFF

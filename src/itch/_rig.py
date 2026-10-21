@@ -23,6 +23,9 @@ CHANNELS = range(1, 17)
 Position = Literal["on", "off"]
 """A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
 
+ALL_CHANNELS = 0xFFFF
+"""The mask of all 16 Channels."""
+
 _LOGGER = logging.getLogger("itch")
 
 _NOT_UNICAST = "it must not be zero, 255.255.255.255 or multicast."
@@ -34,7 +37,7 @@ class Rig:
     ```python
     with Rig.connect("bench3") as rig:
         print(rig.label, rig.hardware_id, rig.firmware_version)
-        rig.set_channel(3, "on")
+        rig.set(3)
     ```
     """
 
@@ -155,6 +158,80 @@ class Rig:
             self._locks += 1
         return RigLock(self._release_one)
 
+    def set(self, *channels: int) -> None:
+        """Turns `channels` on, in one write, leaving the rest as they are: `rig.set(1, 5)`.
+
+        Raises `ValueError`, sending nothing, if no Channels are given or one isn't 1 to 16.
+        """
+        if not channels:
+            raise ValueError("No Channels given: name the Channels to turn on, as in set(1, 5).")
+        bits = ch(*channels)
+        self._write_channels(bits, bits)
+
+    def clear(self, *channels: int) -> None:
+        """Turns `channels` off, in one write, leaving the rest as they are: `rig.clear(3)`.
+
+        Raises `ValueError`, sending nothing, if no Channels are given, so a computed empty
+        selection never turns every Channel off; `clear_all()` does that. Also raises it if a
+        Channel isn't 1 to 16.
+        """
+        if not channels:
+            raise ValueError("No Channels given; use clear_all() to turn every Channel off.")
+        self._write_channels(ch(*channels), 0)
+
+    def write(self, *, set: Iterable[int] = (), clear: Iterable[int] = ()) -> None:
+        """Turns the Channels in `set` on and those in `clear` off, in one write, leaving the
+        rest as they are: `rig.write(set=[1, 5], clear=[3])`.
+
+        Raises `ValueError`, sending nothing, if both are empty, a Channel is in both, or a
+        Channel isn't 1 to 16.
+        """
+        on, off = ch(*set), ch(*clear)
+        if both := on & off:
+            raise ValueError(
+                f"{_channels_named(both)} can't be in both set and clear; pick one for each."
+            )
+        if not on | off:
+            raise ValueError(
+                "No Channels given; use clear_all() for a full Clear, or name Channels to set "
+                "or clear."
+            )
+        self._write_channels(on | off, on)
+
+    def apply(self, state: int, *, mask: int = ALL_CHANNELS) -> None:
+        """Writes the 16-bit `state` to the Channels in `mask`, in one write, leaving the rest
+        as they are. Bit 0 is CH1 and bit 15 is CH16, so `ch()` builds both from Channel
+        numbers.
+
+        `rig.apply(0x6742)` writes every Channel. `rig.apply(0x6742, mask=0xFF00)` writes
+        CH9 to CH16 only, ignoring the bits of `state` outside `mask`. A `ChannelState` from
+        `get_all()` can be applied back.
+
+        Raises `ValueError`, sending nothing, if `state` or `mask` isn't an `int` from 0 to
+        0xFFFF, or `mask` is 0.
+        """
+        _checked_word(state, "state")
+        if _checked_word(mask, "mask") == 0:
+            raise ValueError("The mask 0 selects no Channels: name some, as in mask=ch(1, 5).")
+        self._write_channels(mask, state & mask)
+
+    def set_all(self) -> None:
+        """Turns every Channel on, in one write."""
+        self.apply(ALL_CHANNELS)
+
+    def clear_all(self) -> None:
+        """Turns every Channel off: the Clear."""
+        self._connection.request(_wire.Clear(self._holder), _wire.ClearReply)
+
+    def get(self, channel: int) -> bool:
+        """Whether the Rig commands Channel `channel` on, read from the Rig now."""
+        bit = _bit(channel)
+        return bool(self._read_channels() & bit)
+
+    def get_all(self) -> ChannelState:
+        """The state of all 16 Channels, read from the Rig now in one request."""
+        return ChannelState(self._read_channels())
+
     def set_channel(self, ch: int, pos: Position) -> None:
         """Turns Channel `ch` on or off."""
         self.set_channels({ch: pos})
@@ -171,10 +248,6 @@ class Rig:
             if _is_on(position):
                 values |= bit
         self._write_channels(mask, values)
-
-    def clear(self) -> None:
-        """Turns every Channel off."""
-        self._connection.request(_wire.Clear(self._holder), _wire.ClearReply)
 
     def get_channel(self, ch: int) -> Position:
         """Returns whether the Rig commands Channel `ch` "on" or "off"."""
@@ -360,12 +433,45 @@ class Rig:
             self._left_locked = True
 
 
+class ChannelState(int):
+    """The state of all 16 Channels, as `rig.get_all()` read it: an `int`, bit 0 for CH1.
+
+    ```python
+    state = rig.get_all()
+    print(state)        # ChannelState(0x6742, on=[2, 7, 9, 10, 11, 14, 15])
+    state.get(7)        # True
+    rig.apply(state)    # puts every Channel back as it was
+    ```
+
+    It is immutable and never asks the Rig again: it keeps the state as read. Arithmetic on it
+    gives a plain `int`.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, state: int) -> Self:
+        """Raises `ValueError` unless `state` is an `int` from 0 to 0xFFFF."""
+        return super().__new__(cls, _checked_word(state, "state"))
+
+    @property
+    def on(self) -> frozenset[int]:
+        """The Channels that are on."""
+        return frozenset(_channels_in(self))
+
+    def get(self, channel: int) -> bool:
+        """Whether Channel `channel` is on in this state."""
+        return bool(self & _bit(channel))
+
+    def __repr__(self) -> str:
+        return f"ChannelState(0x{self:04X}, on={_channels_in(self)})"
+
+
 class RigLock:
     """A Lock this script holds on a Rig. Get one from `rig.lock()`.
 
     ```python
     with rig.lock():
-        rig.set_channel(3, "on")
+        rig.set(3)
     ```
 
     Leaving the block, or calling `.release()`, releases it. The Rig stays Locked while
@@ -446,11 +552,43 @@ def _checked_holder(holder: str) -> str:
     return holder
 
 
+def ch(*channels: int) -> int:
+    """The bits of `channels`, bit 0 for CH1, to pass `apply()`: `ch(1, 5) == 0x0011`.
+
+    Raises `ValueError` if a Channel isn't 1 to 16.
+    """
+    bits = 0
+    for channel in channels:
+        bits |= _bit(channel)
+    return bits
+
+
 def _bit(channel: int) -> int:
     # `in range` alone would let `True` through as CH1 and `1.0` through as a float.
     if type(channel) is not int or channel not in CHANNELS:
         raise ValueError(f"Channel {channel!r} doesn't exist: a Rig's Channels are 1 to 16.")
     return 1 << (channel - 1)
+
+
+def _channels_in(bits: int) -> list[int]:
+    """The Channels whose bits are set, in order."""
+    return [channel for channel in CHANNELS if bits & (1 << (channel - 1))]
+
+
+def _channels_named(bits: int) -> str:
+    """`Channel 3`, or `Channels 3, 5` for several."""
+    channels = _channels_in(bits)
+    return f"Channel{'s' if len(channels) > 1 else ''} {', '.join(map(str, channels))}"
+
+
+def _checked_word(value: object, name: str) -> int:
+    # `bool` is an `int`, but `apply(True)` is surely a mistake.
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= ALL_CHANNELS:
+        raise ValueError(
+            f"{value!r} can't be a Channel {name}: it must be an int from 0 to 0xFFFF, bit 0 "
+            "for CH1."
+        )
+    return value
 
 
 def _is_on(position: Position) -> bool:
