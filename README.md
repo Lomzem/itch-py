@@ -109,7 +109,7 @@ Connecting Locks the Rig (see [Sharing a Rig](#sharing-a-rig)). Any of these rel
 - leaving a `with Rig.connect(...)` block, including on an exception;
 - the script ending without either, normally or on an uncaught exception.
 
-Disconnecting never changes the Channels: the Rig keeps them, so the next script, or a reconnect, finds them as this one left them. Calling `disconnect()` again does nothing, and anything else on that `rig` then raises `DisconnectedError`.
+Disconnecting never changes the Channels: the Rig keeps them, so the next script, or a reconnect, finds them as this one left them. Calling `disconnect()` again does nothing, and any read or change on that `rig` then raises `DisconnectedError`.
 
 Connecting again to a Rig the script already has open, on the same USB port or `tcp://` address, just works, as when you re-run a notebook cell that connects. itch-py first disconnects the older connection, releasing its Lock. Using the older variable then raises `DisconnectedError` saying the script connected to the same Rig again, so use the newer one.
 
@@ -136,6 +136,8 @@ rig.get(5)  # True
 rig.get(3)  # False
 print(rig.get_all())  # ChannelState(0x0011, on=[1, 5])
 ```
+
+`get_all()` shows the state in hex with the Channels that are on. CH1 is the rightmost bit of that hex, so build states from Channel numbers with `ch(...)` (see [Whole Channel states](#whole-channel-states)).
 
 Every read asks the Rig, so it shows what the Rig commands now, and every change is sent, even one that repeats the last.
 
