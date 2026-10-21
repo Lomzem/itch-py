@@ -1,8 +1,12 @@
 """Connection behaviour: a silent Rig is retried once, and a dropped connection isn't reopened."""
 
+import logging
+import threading
+import time
+
 import pytest
 from conftest import RunningSim
-from scripted_rig import ScriptedRig, after_connecting
+from scripted_rig import HangUp, ScriptedRig, after_connecting
 
 from itch import DisconnectedError, ItchError, NotRespondingError, Rig, _connection
 from itch._wire import (
@@ -67,6 +71,23 @@ def test_a_dropped_connection_fails_every_later_call_without_reconnecting(
             assert str(raised.value) == "Rig disconnected; run the script again."
 
 
+def test_a_connection_dropped_before_the_reply_fails_that_call_at_once_and_every_later_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_connection, "REQUEST_TIMEOUT", 5.0)
+
+    def answer(request: Request) -> list[Message]:
+        raise HangUp
+
+    with after_connecting(answer) as peer, Rig.connect(peer.url) as rig:
+        start = time.monotonic()
+        with pytest.raises(DisconnectedError):
+            rig.get_channels()
+        assert time.monotonic() - start < 1.0
+        with pytest.raises(DisconnectedError):
+            rig.get_channels()
+
+
 def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
     def answer(request: Request) -> list[Message]:
         return [OkResponse(request.request_id, ClearReply(0))]
@@ -80,3 +101,12 @@ def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
         ),
     ):
         rig.get_channels()
+
+
+def test_closing_ends_every_thread_the_connection_started(sim: str) -> None:
+    before = set(threading.enumerate())
+    with Rig.connect(sim, log_level=logging.DEBUG):
+        Rig.connect(sim).close()  # A Log Event for the threads to handle.
+        started = set(threading.enumerate()) - before
+        assert started
+    assert [thread for thread in started if thread.is_alive()] == []

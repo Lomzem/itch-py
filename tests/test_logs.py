@@ -1,6 +1,7 @@
 """Opting in to the Rig's logs through Python `logging`."""
 
 import logging
+import threading
 
 import pytest
 from scripted_rig import ACME_HELLO, answering
@@ -40,6 +41,31 @@ def test_forwards_rig_logs_to_python_logging(sim: str, caplog: pytest.LogCapture
     assert record.name == "itch.rig"
     assert record.levelno == logging.INFO
     assert record.message.startswith(f"Rig {rig.label}: "), record.message
+
+
+def test_forwards_rig_logs_while_the_script_is_idle(
+    sim: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="itch.rig")
+
+    class Waiting(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.heard = threading.Event()
+
+        def emit(self, record: logging.LogRecord) -> None:
+            if "connected" in record.getMessage():
+                self.heard.set()
+
+    logger = logging.getLogger("itch.rig")
+    handler = Waiting()
+    logger.addHandler(handler)
+    try:
+        with Rig.connect(sim, log_level=logging.INFO):
+            Rig.connect(sim).close()  # The sim logs this connection to every opted-in one.
+            assert handler.heard.wait(1.0)
+    finally:
+        logger.removeHandler(handler)
 
 
 def test_forwards_rig_logs_still_unread_when_the_rig_closes(

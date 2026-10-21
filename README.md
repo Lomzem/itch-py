@@ -163,7 +163,7 @@ To write a Profile for your own DUT, start with [Writing a Profile](docs/writing
 
 ## Rig logs
 
-The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger:
+The Rig's own log messages are off by default. To see them in your test log, pass a Python logging level. Messages at that level and above go to the `itch.rig` logger as they arrive, even while your script sleeps. They are logged from a thread of itch-py's own, so a log handler may use the Rig:
 
 ```python
 import logging

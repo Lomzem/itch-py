@@ -2,11 +2,12 @@
 
 It isn't a Rig: it answers each request with the messages `answer` returns, maybe none, and
 records what it was sent. An answer given as `bytes` is sent as a raw payload, for replies this
-itch-py's codec can't encode.
+itch-py's codec can't encode. An `answer` that raises `HangUp` closes the connection instead.
 """
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import threading
 from collections.abc import Callable, Iterable
@@ -39,6 +40,10 @@ ACME_HELLO = HelloReply(
 """The `Hello` reply of a made-up Rig labelled `bench3`."""
 
 
+class HangUp(Exception):
+    """Raised by an `answer` to close the connection without replying."""
+
+
 class ScriptedRig:
     def __init__(self, answer: Callable[[Request], Iterable[Message | bytes]]) -> None:
         self._answer = answer
@@ -65,7 +70,7 @@ class ScriptedRig:
     def _serve(self) -> None:
         connection, _ = self._listener.accept()
         decoder = FrameDecoder()
-        with connection:
+        with connection, contextlib.suppress(HangUp):
             while data := connection.recv(4096):
                 for payload in decoder.feed(data):
                     request = decode(payload)
