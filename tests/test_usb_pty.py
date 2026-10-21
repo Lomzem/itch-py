@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import os
 import select
 import socket
@@ -16,6 +17,7 @@ import pytest
 from conftest import RunningSim
 from serial.tools import list_ports
 from serial.tools.list_ports_common import ListPortInfo
+from tcp_client import other_client
 
 from itch import (
     DisconnectedError,
@@ -25,6 +27,7 @@ from itch import (
     _connection,
     list_rigs,
 )
+from itch._wire import SetLabel, SetLabelReply
 
 SIM_HARDWARE_ID = "02:00:00:51:4D:01"
 
@@ -137,6 +140,45 @@ def test_listing_an_open_usb_rig_leaves_it_connected_and_in_use(pty_rig: str) ->
         assert info.in_use
         assert rig.status().holder == "alice"
         assert rig.get_all() == 0x8011
+
+
+def test_dropping_a_usb_rig_releases_its_lock_and_port(pty_rig: str) -> None:
+    rig = Rig.connect(pty_rig, holder="alice")
+    rig.set(1)
+    del rig
+    gc.collect()
+
+    with Rig.connect(pty_rig, holder="bob") as new:
+        assert new.status().holder == "bob"
+        assert new.get_all() == 0x0001
+
+
+@pytest.mark.parametrize("lookup", ["new-label", "old-label"])
+def test_usb_label_lookup_uses_the_label_after_an_external_rename(
+    pty_rig: str, own_sim: RunningSim, lookup: str
+) -> None:
+    with Rig.connect(pty_rig, holder="alice") as old:
+        old.set(1)
+        old_label = old.label
+        with other_client(own_sim.url) as renamer:
+            renamer.request(SetLabel("alice", "new-bench"), SetLabelReply)
+
+        if lookup == "new-label":
+            with Rig.connect("new-bench", holder="alice", browse_timeout=0) as new:
+                assert new.label == "new-bench"
+                assert new.hardware_id == SIM_HARDWARE_ID
+                assert new.status().holder == "alice"
+                assert new.get_all() == 0x0001
+                with pytest.raises(DisconnectedError, match="connected to the same Rig again"):
+                    old.get_all()
+        else:
+            with (
+                pytest.raises(RigNotFoundError),
+                Rig.connect(old_label, holder="alice", browse_timeout=0),
+            ):
+                pass
+            assert old.status().holder == "alice"
+            assert old.get_all() == 0x0001
 
 
 def test_over_usb_silence_after_a_network_change_is_unexpected(

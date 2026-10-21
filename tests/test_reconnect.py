@@ -22,14 +22,16 @@ DUT_USES: dict[str, Callable[[AcmeWidget], object]] = {
 
 
 @pytest.mark.parametrize("uncaught", [False, True], ids=["normal-exit", "uncaught-exception"])
+@pytest.mark.parametrize("retained", [True, False], ids=["retained-Rig", "dropped-Rig"])
 def test_interpreter_exit_releases_the_lock_without_changing_channels(
-    own_sim: RunningSim, uncaught: bool
+    own_sim: RunningSim, uncaught: bool, retained: bool
 ) -> None:
-    script = f"""
-from itch import Rig
-rig = Rig.connect({own_sim.url!r}, holder="alice")
-rig.apply(0x8011)
-"""
+    connect = f'Rig.connect({own_sim.url!r}, holder="alice")'
+    script = "from itch import Rig\n"
+    if retained:
+        script += f"rig = {connect}\nrig.apply(0x8011)\n"
+    else:
+        script += f"{connect}.set(1)\n"
     if uncaught:
         script += 'raise RuntimeError("the QA script failed")\n'
     result = subprocess.run(
@@ -44,7 +46,7 @@ rig.apply(0x8011)
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
     with Rig.connect(own_sim.url, holder="bob", lock=False) as observer:
-        assert observer.get_all() == 0x8011
+        assert observer.get_all() == (0x8011 if retained else 0x0001)
         assert observer.status().holder is None
 
 
