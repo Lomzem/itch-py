@@ -17,8 +17,8 @@ Mode = Literal["cinema", "sport", "night", "movie"]
 Resolution = Literal["720p", "1080p", "4k"]
 
 
-def script(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
+def script(address: str) -> None:
+    dut = Rig.connect(address, AcmeWidget)
     dut.resolution.set("1080p")
     dut.mode.set("night", encoding=2)
     dut.mode.set("movie")
@@ -26,9 +26,7 @@ def script(rig: Rig) -> None:
         encoding.set()
     for encoding in dut.mode.all_encodings():
         encoding.set()
-    with dut.batch():
-        dut.refresh.set("50hz")
-        dut.mode.set("night")
+    dut.apply(refresh="50hz", mode="night")
 
     assert_type(dut.resolution.get(), Resolution)
     assert_type(dut.mode.get(), Mode)
@@ -37,20 +35,18 @@ def script(rig: Rig) -> None:
     assert_type(dut.mode.all_encodings()[0].value, Mode)
 
 
-def typos_in_a_script(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
+def typos_in_a_script(address: str) -> None:
+    dut = Rig.connect(address, AcmeWidget)
     dut.mode.set("nigth")  # pyright: ignore[reportArgumentType]
     dut.mode.encodings("Night")  # pyright: ignore[reportArgumentType]
     dut.resolution.set("night")  # pyright: ignore[reportArgumentType]
     dut.mode.set(1)  # pyright: ignore[reportArgumentType]
     dut.mode.sett("night")  # pyright: ignore[reportAttributeAccessIssue]
     dut.mood.set("night")  # pyright: ignore[reportAttributeAccessIssue]
-    with dut.batch():
-        dut.mode.set("nigth")  # pyright: ignore[reportArgumentType]
 
 
-def assigning_a_value(rig: Rig) -> None:
-    AcmeWidget(rig).mode = "night"  # pyright: ignore[reportAttributeAccessIssue]
+def assigning_a_value(address: str) -> None:
+    Rig.connect(address, AcmeWidget).mode = "night"  # pyright: ignore[reportAttributeAccessIssue]
 
 
 class Mistakes(Profile):

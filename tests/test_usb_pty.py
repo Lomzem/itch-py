@@ -63,14 +63,14 @@ def _relay(controller: int, sim: socket.socket, stop: int) -> None:
 def test_talks_to_a_rig_through_pyserial(pty_rig: str) -> None:
     with Rig.connect() as rig:
         assert rig.hardware_id == SIM_HARDWARE_ID
-        rig.set_channel(3, "on")
-        assert rig.get_channel(3) == "on"
+        rig.set(3)
+        assert rig.get(3) is True
 
 
 def test_a_port_another_itch_py_has_open_is_in_use(pty_rig: str) -> None:
     with Rig.connect(pty_rig), pytest.raises(RigNotFoundError, match="in use by another program"):
         Rig.connect(SIM_HARDWARE_ID)
-    Rig.connect(pty_rig).close()
+    Rig.connect(pty_rig).disconnect()
 
 
 def test_over_usb_silence_after_a_network_change_is_unexpected(
@@ -81,4 +81,4 @@ def test_over_usb_silence_after_a_network_change_is_unexpected(
         rig.set_wifi("ExampleRigNet", "example-passphrase")
         own_sim.stop()
         with pytest.raises(NotRespondingError):
-            rig.get_channels()
+            rig.get_all()

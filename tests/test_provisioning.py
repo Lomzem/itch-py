@@ -186,9 +186,9 @@ def test_a_drop_after_a_network_change_succeeds_then_says_to_reconnect(
         helper(rig)
         assert peer.closed.wait(2)
         with pytest.raises(DisconnectedError, match="reconnect after the network change"):
-            rig.get_channels()
+            rig.get_all()
         with caplog.at_level(logging.DEBUG, logger="itch"):
-            rig.close()
+            rig.disconnect()
     assert caplog.records == []
 
 
@@ -200,9 +200,9 @@ def test_a_rig_silent_after_a_network_change_has_disconnected(
         rig = Rig.connect(peer.url)
         rig.set_address(IPv4Interface("192.0.2.10/24"))
         with pytest.raises(DisconnectedError, match="reconnect after the network change"):
-            rig.get_channels()
+            rig.get_all()
         with caplog.at_level(logging.DEBUG, logger="itch"):
-            rig.close()
+            rig.disconnect()
     assert caplog.records == []
 
 
@@ -231,7 +231,7 @@ def test_closing_a_rig_silent_after_a_network_change_tries_to_release_once_quiet
         rig = Rig.connect(peer.url, holder="alice")
         rig.set_address(IPv4Interface("192.0.2.10/24"))
         with caplog.at_level(logging.DEBUG, logger="itch"):
-            rig.close()
+            rig.disconnect()
         assert peer.closed.wait(2)
     assert caplog.records == []
     assert [r.body for r in peer.requests if isinstance(r.body, ReleaseLock)] == [

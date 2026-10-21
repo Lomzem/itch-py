@@ -7,7 +7,7 @@ import pytest
 from acme_widget import AcmeWidget
 from scripted_rig import channel_writes, granting_writes
 
-from itch import BatchConflictError, Rig
+from itch import BatchConflictError, Profile, Rig, field
 
 
 def test_field_apply_sends_one_mask_write_over_the_union_of_channels() -> None:
@@ -98,6 +98,13 @@ def test_field_apply_accepts_every_encoding_in_a_sweep(sim: str) -> None:
         ),
         pytest.param(
             (),
+            {"tone": "1khz", "picture": "black"},
+            BatchConflictError,
+            r'CH3: tone="1khz" needs on, but picture="black" needs off\.',
+            id="conflict-names-first-specified-field-first",
+        ),
+        pytest.param(
+            (),
             {},
             ValueError,
             r"apply\(\) needs a Channel state or at least one Field",
@@ -133,4 +140,24 @@ def test_field_apply_rejects_an_encoding_of_another_field_without_writing() -> N
         encoding = dut.refresh.encodings("50hz")[0]
         with pytest.raises(ValueError, match=r"mode: .* is an Encoding of refresh, not mode\."):
             dut.apply(resolution="4k", mode=encoding)
+    assert channel_writes(peer) == []
+
+
+class Overlapping(Profile):
+    left = field(channels=[2], values={"low": ["off"], "high": ["on"]})
+    right = field(channels=[1], values={"low": ["off"], "high": ["on"]})
+    both = field(channels=[1, 2], values={"mixed": ["on", "off"], "up": ["on", "on"]})
+
+
+def test_field_apply_names_the_first_conflicting_channel_and_who_set_it() -> None:
+    message = (
+        r'^CH1: right="low" needs off, but both="up" needs on\. Set only one of them, '
+        r"or pick Values that agree\. No Channels were changed\.$"
+    )
+    with (
+        granting_writes() as peer,
+        Rig.connect(peer.url, Overlapping) as dut,
+        pytest.raises(BatchConflictError, match=message),
+    ):
+        dut.apply(left="low", right="low", both="up")
     assert channel_writes(peer) == []

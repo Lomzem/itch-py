@@ -33,7 +33,7 @@ def test_connect_with_a_profile_drives_fields_and_channels(sim: str, keyword: bo
         assert dut.get_all() == 0x0002
         assert dut.resolution.get() == "1080p"
     finally:
-        dut.rig.close()
+        dut.disconnect()
 
 
 @pytest.mark.parametrize("lock", [True, False], ids=["locked", "unlocked"])
@@ -45,7 +45,7 @@ def test_profile_connect_preserves_holder_and_lock_options(own_sim: RunningSim, 
         dut.set(3)
         assert dut.get(3) is True
     finally:
-        dut.rig.close()
+        dut.disconnect()
 
 
 @pytest.mark.parametrize(
@@ -67,7 +67,7 @@ def test_dut_channel_verbs_send_one_exact_mask_write(
         try:
             getattr(dut, verb)(*args, **kwargs)
         finally:
-            dut.rig.close()
+            dut.disconnect()
     assert channel_writes(peer) == [expected]
     assert not any(isinstance(request.body, Clear) for request in peer.requests)
 
@@ -79,7 +79,7 @@ def test_dut_rejects_a_contradictory_write_without_sending() -> None:
             with pytest.raises(ValueError, match="both set and clear"):
                 dut.write(set=[1, 5], clear=[3, 5])
         finally:
-            dut.rig.close()
+            dut.disconnect()
     assert not any(isinstance(request.body, WriteChannels | Clear) for request in peer.requests)
 
 
@@ -102,7 +102,7 @@ def test_rig_administration_is_only_available_through_dut_rig(sim: str) -> None:
             assert not hasattr(dut, name), name
             assert hasattr(dut.rig, name), name
     finally:
-        dut.rig.close()
+        dut.disconnect()
 
 
 @pytest.mark.parametrize("profile", [Rig, object(), Profile], ids=["Rig", "instance", "Profile"])
@@ -130,7 +130,7 @@ def test_disconnect_releases_the_lock_without_changing_channels(
             assert bob.status().holder == "bob"
             assert bob.get_all() == 0x8011
     finally:
-        rig.close()
+        rig.disconnect()
 
 
 @pytest.mark.parametrize("profiled", [False, True], ids=["Rig", "DUT"])
@@ -157,7 +157,7 @@ def test_disconnect_is_idempotent_and_later_use_sends_nothing(profiled: bool) ->
                 with pytest.raises(DisconnectedError, match="was disconnected by this script"):
                     client.rig.get_all()
         finally:
-            rig.close()
+            rig.disconnect()
     assert [request.body for request in peer.requests[connected_requests:]] == [
         ReleaseLock("alice")
     ]
@@ -193,4 +193,4 @@ def test_context_exit_disconnects_without_changing_channels(
             assert bob.status().holder == "bob"
             assert bob.get_all() == 0x8011
     finally:
-        rig.close()
+        rig.disconnect()
