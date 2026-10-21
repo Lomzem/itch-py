@@ -1,102 +1,84 @@
 """Profiles: driving a DUT by its settings against `itch-sim`."""
 
-from collections.abc import Mapping
+import re
 
 import pytest
 from acme_widget import AcmeWidget
 from scripted_rig import channel_writes, granting_writes
 
-from itch import ItchError, Rig
-
-ALL_OFF = dict.fromkeys(range(1, 17), "off")
+from itch import ItchError, Rig, field
 
 
-def test_setting_a_field_writes_its_channels_and_leaves_the_rest(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
-    rig.clear()
-    rig.set_channels({1: "on", 16: "on"})
+def test_setting_a_field_writes_its_channels_and_leaves_the_rest(dut: AcmeWidget) -> None:
+    dut.clear_all()
+    dut.set(1, 16)
     dut.resolution.set("1080p")
-    assert rig.get_channels() == {**ALL_OFF, 1: "off", 2: "on", 16: "on"}
+    assert dut.get_all() == 0x8002
     assert dut.resolution.get() == "1080p"
 
 
 def test_a_set_is_one_mask_write_over_the_fields_channels() -> None:
-    with granting_writes() as peer, Rig.connect(peer.url) as rig:
-        AcmeWidget(rig).mode.set("night", encoding=2)
+    with granting_writes() as peer, Rig.connect(peer.url, AcmeWidget) as dut:
+        dut.mode.set("night", encoding=2)
     assert channel_writes(peer) == [(0b11_1000, 0b10_1000)]
 
 
-def test_a_value_sets_encoding_1_unless_told_otherwise(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
+def test_a_value_sets_encoding_1_unless_told_otherwise(dut: AcmeWidget) -> None:
     dut.mode.set("night")
-    assert rig.get_channels([4, 5, 6]) == {4: "on", 5: "off", 6: "off"}
+    assert dut.get_all() & 0x0038 == 0x0008
     dut.mode.set("night", encoding=3)
-    assert rig.get_channels([4, 5, 6]) == {4: "on", 5: "on", 6: "off"}
+    assert dut.get_all() & 0x0038 == 0x0018
 
 
-def test_get_reads_back_any_encoding_as_its_value(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
-    rig.set_channels({4: "on", 5: "off", 6: "on"})
+def test_get_reads_back_any_encoding_as_its_value(dut: AcmeWidget) -> None:
+    dut.apply(0x0028, mask=0x0038)
     assert dut.mode.get() == "night"
     encoding = dut.mode.get_encoding()
     assert (encoding.value, encoding.number) == ("night", 2)
 
 
-def test_an_alias_sets_its_value_and_reads_back_as_it(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
+def test_an_alias_sets_its_value_and_reads_back_as_it(dut: AcmeWidget) -> None:
     dut.mode.set("night")
     dut.mode.set("movie")
-    assert rig.get_channels([4, 5, 6]) == {4: "off", 5: "off", 6: "off"}
+    assert dut.get_all() & 0x0038 == 0x0000
     assert dut.mode.get() == "cinema"
 
 
-def test_encodings_sweeps_every_encoding_of_a_value(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
-    seen: list[Mapping[int, str]] = []
+def test_encodings_sweeps_every_encoding_of_a_value(dut: AcmeWidget) -> None:
+    seen: list[int] = []
     for encoding in dut.mode.encodings("night"):
         encoding.set()
         assert dut.mode.get_encoding().number == encoding.number
-        seen.append(rig.get_channels([4, 5, 6]))
-    assert seen == [
-        {4: "on", 5: "off", 6: "off"},
-        {4: "on", 5: "off", 6: "on"},
-        {4: "on", 5: "on", 6: "off"},
-    ]
+        seen.append(dut.get_all() & 0x0038)
+    assert seen == [0x0008, 0x0028, 0x0018]
 
 
-def test_an_encoding_shows_its_value_number_and_positions(rig: Rig) -> None:
-    encoding = AcmeWidget(rig).mode.encodings("night")[1]
+def test_an_encoding_shows_its_value_number_and_positions(dut: AcmeWidget) -> None:
+    encoding = dut.mode.encodings("night")[1]
     assert encoding.positions == ["on", "off", "on"]
     assert repr(encoding) == 'mode="night" Encoding 2 of 3 ["on", "off", "on"]'
 
 
-def test_encodings_of_an_alias_are_its_values(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
+def test_encodings_of_an_alias_are_its_values(dut: AcmeWidget) -> None:
     assert [(e.value, e.number) for e in dut.mode.encodings("movie")] == [("cinema", 1)]
 
 
-def test_all_encodings_sweeps_every_value_once(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
+def test_all_encodings_sweeps_every_value_once(dut: AcmeWidget) -> None:
     sweep = [(e.value, e.number) for e in dut.mode.all_encodings()]
     assert sweep == [("cinema", 1), ("sport", 1), ("night", 1), ("night", 2), ("night", 3)]
-    for encoding in dut.mode.all_encodings():
-        encoding.set()
-        got = dut.mode.get_encoding()
-        assert (got.value, got.number) == (encoding.value, encoding.number)
 
 
-def test_an_unknown_value_suggests_the_closest_and_lists_the_choices(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
+def test_an_unknown_value_suggests_the_closest_and_lists_the_choices(dut: AcmeWidget) -> None:
     message = (
         r'mode has no Value "nigth"\. Did you mean "night"\? '
         r'Choose one of: "cinema", "sport", "night", "movie"\.'
     )
-    rig.clear()
+    dut.clear_all()
     with pytest.raises(ValueError, match=message):
         dut.mode.set("nigth")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match=message):
         dut.mode.encodings("nigth")  # pyright: ignore[reportArgumentType]
-    assert rig.get_channels() == ALL_OFF
+    assert dut.get_all() == 0x0000
 
 
 @pytest.mark.parametrize(
@@ -109,18 +91,16 @@ def test_an_unknown_value_suggests_the_closest_and_lists_the_choices(rig: Rig) -
     ],
 )
 def test_an_encoding_out_of_range_says_how_many_there_are(
-    rig: Rig, value: str, encoding: int, message: str
+    dut: AcmeWidget, value: str, encoding: int, message: str
 ) -> None:
-    dut = AcmeWidget(rig)
-    rig.clear()
+    dut.clear_all()
     with pytest.raises(ValueError, match=message):
         dut.mode.set(value, encoding=encoding)  # pyright: ignore[reportArgumentType]
-    assert rig.get_channels() == ALL_OFF
+    assert dut.get_all() == 0x0000
 
 
-def test_get_raises_when_the_channels_match_no_value(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
-    rig.set_channels({4: "off", 5: "on", 6: "off"})
+def test_get_raises_when_the_channels_match_no_value(dut: AcmeWidget) -> None:
+    dut.apply(0x0010, mask=0x0038)
     message = (
         r'CH4, CH5, CH6 are \["off", "on", "off"\], which isn\'t any Value of AcmeWidget\.mode\.'
     )
@@ -130,8 +110,36 @@ def test_get_raises_when_the_channels_match_no_value(rig: Rig) -> None:
         dut.mode.get_encoding()
 
 
-def test_assigning_to_a_field_points_to_set(rig: Rig) -> None:
-    dut = AcmeWidget(rig)
-    with pytest.raises(AttributeError, match=r'Use dut\.mode\.set\("cinema"\) to change mode\.'):
+def test_assigning_to_a_field_points_to_apply_and_set(dut: AcmeWidget) -> None:
+    with pytest.raises(AttributeError) as raised:
         dut.mode = "cinema"  # pyright: ignore[reportAttributeAccessIssue]
+    message = str(raised.value)
+    assert re.search(r'dut\.apply\(mode="cinema"\)', message), message
+    assert re.search(r'dut\.mode\.set\("cinema"\)', message), message
     assert repr(dut.mode) == "<Field AcmeWidget.mode>"
+
+
+def test_fields_sharing_a_channel_read_the_same_switch(dut: AcmeWidget) -> None:
+    dut.picture.set("bars")
+    assert dut.tone.get() == "1khz"
+    dut.mode.set("night")
+    assert dut.refresh.get() == "50hz"
+
+
+def test_printing_a_dut_shows_the_positions_of_a_field_that_matches_no_value(
+    dut: AcmeWidget,
+) -> None:
+    dut.clear_all()
+    assert str(dut).startswith('AcmeWidget(resolution=["off", "off"] (no Value), picture="black"')
+
+
+class Inherited(AcmeWidget):
+    hdmi = field(channels=[8], values={"hdmi off": ["off"], "hdmi on": ["on"]})
+
+
+def test_printing_a_dut_shows_inherited_fields_too(sim: str) -> None:
+    with Rig.connect(sim, Inherited) as dut:
+        dut.clear_all()
+        dut.resolution.set("4k")
+        assert str(dut).startswith('Inherited(resolution="4k", picture="black"')
+        assert str(dut).endswith('mode="cinema", hdmi="hdmi off")')

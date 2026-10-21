@@ -7,8 +7,10 @@ import threading
 import time
 
 import pytest
+from acme_widget import AcmeWidget
 from conftest import RunningSim
 from scripted_rig import ACME_HELLO, ScriptedRig, after_connecting
+from tcp_client import other_client
 
 from itch import LockedError, Rig
 from itch._wire import (
@@ -24,39 +26,69 @@ from itch._wire import (
     Request,
     SetLogLevel,
     SetLogLevelReply,
+    WriteChannels,
+    WriteChannelsReply,
 )
 
 
 def test_a_locked_rig_refuses_another_holder_who_can_still_look(own_sim: RunningSim) -> None:
-    with Rig.connect(own_sim.url, holder="alice") as alice:
-        alice.set_channel(1, "on")
+    with other_client(own_sim.url) as alice:
+        alice.request(Lock("alice", takeover=False), LockReply)
+        alice.request(WriteChannels("alice", 0x0001, 0x0001), WriteChannelsReply)
         with pytest.raises(LockedError, match="Locked by alice; pass take_over=True"):
             Rig.connect(own_sim.url, holder="bob")
         with Rig.connect(own_sim.url, holder="bob", lock=False) as bob:
-            assert bob.get_channel(1) == "on"
+            assert bob.get(1) is True
             assert bob.status().holder == "alice"
             with pytest.raises(LockedError, match="Locked by alice"):
-                bob.set_channel(2, "on")
-    with Rig.connect(own_sim.url, holder="bob") as bob:  # Alice's close released it.
+                bob.set(2)
+        alice.request(ReleaseLock("alice"), ReleaseLockReply)
+    with Rig.connect(own_sim.url, holder="bob") as bob:  # Alice released it.
         assert bob.status().holder == "bob"
 
 
-def test_a_takeover_refuses_the_old_holder_whose_close_only_warns(
-    own_sim: RunningSim, caplog: pytest.LogCaptureFixture
-) -> None:
-    alice = Rig.connect(own_sim.url, holder="alice")
-    alice.set_channel(1, "on")
-    with Rig.connect(own_sim.url, holder="bob", take_over=True) as bob:
-        assert bob.status().holder == "bob"
-        assert bob.get_channel(1) == "on"
-        with pytest.raises(LockedError, match="Locked by bob"):
-            alice.set_channel(2, "on")
-        with caplog.at_level(logging.WARNING, logger="itch"):
-            alice.close()
-        assert [r.message for r in caplog.records] == [
-            "Rig itch-514D01 was taken over before alice released its Lock."
-        ]
-        assert bob.status().holder == "bob"
+def test_a_takeover_refuses_the_old_holder_whose_close_only_warns(own_sim: RunningSim) -> None:
+    script = f"""
+import logging
+import sys
+from itch import LockedError, Rig
+logging.basicConfig(level=logging.WARNING, format="%(message)s")
+with Rig.connect({own_sim.url!r}, holder="alice") as alice:
+    alice.set(1)
+    print("locked", flush=True)
+    assert sys.stdin.readline().strip() == "try write"
+    try:
+        alice.set(2)
+    except LockedError as error:
+        assert "Locked by bob" in str(error)
+        print("refused", flush=True)
+    else:
+        raise AssertionError("Alice could change Channels after Bob's Takeover")
+"""
+    with subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as other:
+        try:
+            assert other.stdout is not None
+            assert other.stdout.readline().strip() == "locked"
+            with Rig.connect(own_sim.url, AcmeWidget, holder="bob", take_over=True) as bob:
+                assert bob.rig.status().holder == "bob"
+                assert bob.get_all() == 0x0001
+                assert bob.resolution.get() == "720p"
+                stdout, stderr = other.communicate("try write\n", timeout=10)
+                assert other.returncode == 0, stderr
+                assert stdout == "refused\n"
+                assert stderr == (
+                    "Rig itch-514D01 was taken over before alice released its Lock.\n"
+                )
+                assert bob.rig.status().holder == "bob"
+                assert bob.get_all() == 0x0001
+        finally:
+            other.communicate(timeout=10)
 
 
 def test_the_same_holder_picks_its_lock_back_up_after_a_crash(own_sim: RunningSim) -> None:
@@ -64,7 +96,7 @@ def test_the_same_holder_picks_its_lock_back_up_after_a_crash(own_sim: RunningSi
 import os
 from itch import Rig
 rig = Rig.connect({own_sim.url!r}, holder="alice")
-rig.set_channel(3, "on")
+rig.set(3)
 os._exit(0)  # Closes the connection without releasing the Lock.
 """
     subprocess.run([sys.executable, "-c", crash], check=True, timeout=30)
@@ -72,7 +104,7 @@ os._exit(0)  # Closes the connection without releasing the Lock.
         assert bob.status().holder == "alice"
     with Rig.connect(own_sim.url, holder="alice") as alice:
         assert alice.status().holder == "alice"
-        assert alice.get_channel(3) == "on"
+        assert alice.get(3) is True
 
 
 def test_rig_lock_locks_a_look_only_rig_until_the_block_ends(own_sim: RunningSim) -> None:
@@ -134,7 +166,7 @@ def test_closing_after_the_connection_dropped_skips_the_release_quietly(
     rig = Rig.connect(own_sim.url)
     own_sim.stop()
     with caplog.at_level(logging.DEBUG, logger="itch"):
-        rig.close()
+        rig.disconnect()
     assert caplog.records == []
 
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acme_widget import AcmeWidget
 from fake_network import FakeNetwork
 from itch_release import TAG, VECTORS_ASSET, Release, fetch
 
@@ -156,3 +157,10 @@ def rig(sim: str) -> Iterator[Rig]:
     """A connection to the shared `itch-sim`."""
     with Rig.connect(sim) as rig:
         yield rig
+
+
+@pytest.fixture
+def dut(sim: str) -> Iterator[AcmeWidget]:
+    """A DUT connected directly to the shared `itch-sim`."""
+    with Rig.connect(sim, AcmeWidget) as dut:
+        yield dut
