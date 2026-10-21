@@ -4,12 +4,25 @@ import logging
 import threading
 
 import pytest
-from scripted_rig import ACME_HELLO, answering
+from scripted_rig import ACME_HELLO, ScriptedRig, answering
 
 from itch import Rig
 from itch._connection import Connection
 from itch._transport import open_tcp
-from itch._wire import Hello, HelloReply, Lock, LogEvent, SetLogLevel
+from itch._wire import (
+    Hello,
+    HelloReply,
+    Lock,
+    LockReply,
+    LogEvent,
+    Message,
+    OkResponse,
+    ReleaseLock,
+    ReleaseLockReply,
+    Request,
+    SetLogLevel,
+    SetLogLevelReply,
+)
 
 
 def test_turns_rig_logs_off_right_after_hello_then_locks() -> None:
@@ -146,3 +159,47 @@ def test_a_log_handler_may_use_the_rig(sim: str, caplog: pytest.LogCaptureFixtur
         finally:
             logger.removeHandler(handler)
     assert handler.read
+
+
+def test_a_log_handler_may_lock_the_rig_while_it_closes(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="itch.rig")
+
+    def log_each_release(request: Request) -> list[Message]:
+        match request.body:
+            case Hello():
+                return [OkResponse(request.request_id, ACME_HELLO)]
+            case SetLogLevel():
+                return [OkResponse(request.request_id, SetLogLevelReply())]
+            case Lock():
+                return [OkResponse(request.request_id, LockReply())]
+            case _:
+                event = LogEvent(level=3, dropped=0, text="released")
+                return [event, OkResponse(request.request_id, ReleaseLockReply())]
+
+    class Locking(logging.Handler):
+        def __init__(self, rig: Rig) -> None:
+            super().__init__()
+            self.rig = rig
+            self.locked = False
+
+        def emit(self, record: logging.LogRecord) -> None:
+            if not self.locked:
+                self.locked = True
+                with self.rig.lock():  # Waits for close() to finish releasing.
+                    pass
+
+    logger = logging.getLogger("itch.rig")
+    with ScriptedRig(log_each_release) as peer:
+        rig = Rig.connect(peer.url, holder="alice", log_level=logging.INFO)
+        handler = Locking(rig)
+        logger.addHandler(handler)
+        try:
+            closing = threading.Thread(target=rig.close, daemon=True)
+            closing.start()
+            closing.join(5)
+            assert not closing.is_alive(), "close() deadlocked with the log handler"
+        finally:
+            logger.removeHandler(handler)
+    assert handler.locked
+    locks = [r.body for r in peer.requests if isinstance(r.body, Lock | ReleaseLock)]
+    assert locks == [Lock("alice", False), ReleaseLock("alice")] * 2

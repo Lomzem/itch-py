@@ -3,6 +3,8 @@
 import logging
 import subprocess
 import sys
+import threading
+import time
 
 import pytest
 from conftest import RunningSim
@@ -14,9 +16,11 @@ from itch._wire import (
     ErrorResponse,
     Hello,
     Lock,
+    LockReply,
     Message,
     OkResponse,
     ReleaseLock,
+    ReleaseLockReply,
     Request,
     SetLogLevel,
     SetLogLevelReply,
@@ -132,3 +136,38 @@ def test_closing_after_the_connection_dropped_skips_the_release_quietly(
     with caplog.at_level(logging.DEBUG, logger="itch"):
         rig.close()
     assert caplog.records == []
+
+
+def test_locking_while_the_last_lock_is_released_leaves_the_rig_locked() -> None:
+    lock_arrived = threading.Event()
+
+    def answer_locks_slowly(request: Request) -> list[Message]:
+        match request.body:
+            case Hello():
+                reply = ACME_HELLO
+            case SetLogLevel():
+                reply = SetLogLevelReply()
+            case Lock():
+                lock_arrived.set()
+                time.sleep(0.3)  # So the release starts while this Lock is on its way.
+                reply = LockReply()
+            case _:
+                reply = ReleaseLockReply()
+        return [OkResponse(request.request_id, reply)]
+
+    with (
+        ScriptedRig(answer_locks_slowly) as peer,
+        Rig.connect(peer.url, holder="alice", lock=False) as rig,
+    ):
+        held = rig.lock()
+        lock_arrived.clear()
+        locking = threading.Thread(target=rig.lock)
+        locking.start()
+        assert lock_arrived.wait(2)
+        held.release()
+        locking.join()
+        # The other thread's RigLock is still live, so nothing released the Rig.
+        assert [r.body for r in peer.requests if isinstance(r.body, Lock | ReleaseLock)] == [
+            Lock("alice", takeover=False),
+            Lock("alice", takeover=False),
+        ]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import getpass
 import logging
 import socket
+import threading
 import warnings
 from collections.abc import Callable, Iterable, Mapping
 from ipaddress import IPv4Address, IPv4Interface
@@ -46,6 +47,10 @@ class Rig:
         self._locks = 0
         """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
         last releases the Rig's Lock."""
+        self._locking = threading.RLock()
+        """Held while `_locks` changes and its `Lock` or `ReleaseLock` is exchanged, so a release
+        can't unlock the Rig just after another thread Locked it again. Re-entrant, for an
+        `itch` log handler that Locks from the warning `_send_release()` logs."""
 
     @classmethod
     def connect(
@@ -143,8 +148,9 @@ class Rig:
         Raises `LockedError` if another Holder has Locked the Rig, unless `take_over` is true:
         that takes the Lock from them, and their next change raises `LockedError`.
         """
-        self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
-        self._locks += 1
+        with self._locking:
+            self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
+            self._locks += 1
         return RigLock(self._release_one)
 
     def set_channel(self, ch: int, pos: Position) -> None:
@@ -317,18 +323,24 @@ class Rig:
 
     def _release_one(self) -> None:
         """Releases one `RigLock`, and the Rig's Lock with the last."""
-        if self._locks == 0:  # `close()` released it already.
-            return
-        self._locks -= 1
-        if self._locks == 0:
-            self._send_release()
+        with self._locking:
+            if self._locks == 0:  # `close()` released it already.
+                return
+            self._locks -= 1
+            if self._locks == 0:
+                self._send_release()
 
     def _release_lock(self) -> None:
-        """Releases the Lock if any `RigLock` is live, making them all released."""
-        if self._locks == 0:
-            return
-        self._locks = 0
-        self._send_release()
+        """Releases the Lock if any `RigLock` is live, making them all released.
+
+        Not held while the connection closes, which waits for the log handlers, since one may be
+        waiting to Lock.
+        """
+        with self._locking:
+            if self._locks == 0:
+                return
+            self._locks = 0
+            self._send_release()
 
     def _send_release(self) -> None:
         """Sends `ReleaseLock`.
