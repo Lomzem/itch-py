@@ -204,6 +204,28 @@ def test_usb_label_lookup_uses_the_label_after_an_external_rename(
             assert old.get_all() == 0x0001
 
 
+def test_a_failed_label_lookup_preserves_a_dropped_rigs_live_lock(
+    pty_rig: str, own_sim: RunningSim
+) -> None:
+    with Rig.connect(own_sim.url, lock=False) as observer:
+        rig = Rig.connect(pty_rig, holder="alice", lock=False)
+        rig.set(1)
+        held = rig.lock()
+        del rig
+        gc.collect()
+        try:
+            assert observer.status().holder == "alice"
+            with pytest.raises(RigNotFoundError, match="not found"):
+                Rig.connect("absent-bench", holder="bob", browse_timeout=0)
+            assert observer.status().holder == "alice"
+            assert observer.get_all() == 0x0001
+        finally:
+            held.release()
+        assert observer.status().holder is None
+        with Rig.connect(pty_rig, holder="alice", lock=False):
+            pass
+
+
 def test_over_usb_silence_after_a_network_change_is_unexpected(
     pty_rig: str, own_sim: RunningSim, monkeypatch: pytest.MonkeyPatch
 ) -> None:
