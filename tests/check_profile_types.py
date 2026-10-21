@@ -93,3 +93,14 @@ def connecting_with_context_managers() -> None:
     with Rig.connect("x") as rig:
         assert_type(rig, Rig)
         rig.disconnect()
+
+
+def applying_fields_or_a_raw_channel_state() -> None:
+    dut = Rig.connect("x", AcmeWidget)
+    dut.apply(resolution="1080p", mode="night")
+    dut.apply(mode=("night", 2))
+    for enc in dut.mode.all_encodings():
+        dut.apply(mode=enc)
+    dut.apply(0x6742)
+    dut.apply(0x6742, mask=0xFF00)
+    dut.apply(0x6742, mode="night")  # pyright: ignore[reportCallIssue]
