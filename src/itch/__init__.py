@@ -16,7 +16,7 @@ from itch._errors import (
     StorageFaultError,
 )
 from itch._profile import Encoding, Profile, alias, field
-from itch._rig import Rig, list_rigs
+from itch._rig import Rig, RigLock, list_rigs
 from itch._status import AddressMode, Link, Status
 
 __all__ = [
@@ -36,6 +36,7 @@ __all__ = [
     "ProtocolMismatchError",
     "Rig",
     "RigInfo",
+    "RigLock",
     "RigNotFoundError",
     "Status",
     "StorageFaultError",

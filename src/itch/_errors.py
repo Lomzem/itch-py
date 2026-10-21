@@ -22,13 +22,16 @@ class DevelopmentBuildWarning(UserWarning):
 
 
 class LockedError(ItchError):
-    """Someone else holds the Rig's Lock, so it refused a change.
+    """Someone else holds the Rig's Lock, so it refused a change or a Lock.
 
     The message names the Holder for people to read. Read `rig.status().holder` to get it as data.
     """
 
     def __init__(self, rig: str, detail: str) -> None:
-        super().__init__(f"Rig {rig} is Locked by {detail or 'another Holder'}.")
+        super().__init__(
+            f"Rig {rig} is Locked by {detail or 'another Holder'}; pass take_over=True to take "
+            "it over."
+        )
 
 
 class NotRespondingError(ItchError):

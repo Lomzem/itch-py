@@ -16,8 +16,13 @@ from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
     Hello,
     HelloReply,
+    Lock,
+    LockReply,
     Message,
     OkResponse,
+    ReleaseLock,
+    ReleaseLockReply,
+    ReplyBody,
     Request,
     SetLogLevel,
     SetLogLevelReply,
@@ -77,27 +82,38 @@ class ScriptedRig:
         self.closed.set()
 
 
+_GRANTED: dict[type[object], ReplyBody] = {
+    SetLogLevel: SetLogLevelReply(),
+    Lock: LockReply(),
+    ReleaseLock: ReleaseLockReply(),
+}
+"""The replies to the requests every connection sends besides `Hello`."""
+
+
 def answering(hello: HelloReply, *before: Message) -> ScriptedRig:
-    """A peer that answers `SetLogLevel` and, to anything else, `hello`.
+    """A peer that answers `SetLogLevel`, `Lock` and `ReleaseLock`, and anything else `hello`.
 
     It sends `before` ahead of every reply.
     """
 
     def answer(request: Request) -> list[Message]:
-        reply = SetLogLevelReply() if isinstance(request.body, SetLogLevel) else hello
+        reply = _GRANTED.get(type(request.body), hello)
         return [*before, OkResponse(request.request_id, reply)]
 
     return ScriptedRig(answer)
 
 
 def after_connecting(answer: Callable[[Request], Iterable[Message]]) -> ScriptedRig:
-    """A peer that answers `Hello` (as `bench3`) and `SetLogLevel`, and the rest with `answer`."""
+    """A peer that answers `Hello` (as `bench3`), `SetLogLevel`, `Lock` and `ReleaseLock`.
+
+    It answers the rest with `answer`.
+    """
 
     def answer_all(request: Request) -> Iterable[Message]:
         if isinstance(request.body, Hello):
             return [OkResponse(request.request_id, ACME_HELLO)]
-        if isinstance(request.body, SetLogLevel):
-            return [OkResponse(request.request_id, SetLogLevelReply())]
+        if (granted := _GRANTED.get(type(request.body))) is not None:
+            return [OkResponse(request.request_id, granted)]
         return answer(request)
 
     return ScriptedRig(answer_all)

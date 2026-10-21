@@ -37,8 +37,10 @@ def reporting(status: GetStatusReply) -> ScriptedRig:
     return after_connecting(lambda request: [OkResponse(request.request_id, status)])
 
 
-def test_simulator_reports_a_fresh_power_on_unlocked_without_wifi(rig: Rig) -> None:
-    first = rig.status()
+def test_simulator_reports_a_fresh_power_on_unlocked_without_wifi(sim: str) -> None:
+    with Rig.connect(sim, lock=False) as rig:
+        first = rig.status()
+        later = rig.status()
     assert first.reset_reason == "ChipPowerOn"
     assert first.last_panic is None
     assert first.holder is None
@@ -49,7 +51,7 @@ def test_simulator_reports_a_fresh_power_on_unlocked_without_wifi(rig: Rig) -> N
     assert first.address_mode is AddressMode.DHCP
     assert first.static_address is None
     assert first.gateway is None
-    assert rig.status().uptime >= first.uptime
+    assert later.uptime >= first.uptime
 
 
 def test_status_reports_every_field() -> None:

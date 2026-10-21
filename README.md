@@ -88,13 +88,36 @@ The Rig keeps its Channels when the script ends or disconnects: closing never tu
 
 ## Sharing a Rig
 
-Every change your script makes carries its Holder: `user@host` by default, such as `qa@bench-pc`. Pass `holder="..."` to name it yourself, up to 64 bytes:
+Connecting Locks the Rig, so nobody else's script can change it until yours closes. Anyone may still read it. The Lock is held under your script's Holder: `user@host` by default, such as `qa@bench-pc`. Pass `holder="..."` to name it yourself, up to 64 bytes:
 
 ```python
 Rig.connect("bench3", holder="qa@bench-pc")
 ```
 
-Two scripts run by the same user on the same computer share a Holder. A Rig that someone else has Locked refuses changes with `LockedError`, naming who holds it; reading Channels still works. `rig.status().holder` says who holds the Lock, or `None`.
+`rig.holder` is the Holder your script uses, and `rig.status().holder` says who holds the Lock, or `None`.
+
+If someone else holds the Lock, connecting raises `LockedError` naming them:
+
+```
+itch.LockedError: Rig bench3 is Locked by alice@ws3; pass take_over=True to take it over.
+```
+
+To look without Locking, pass `lock=False`. Reads work; changes raise `LockedError` while someone else holds the Lock. To Lock only part of a script, use `rig.lock()`:
+
+```python
+with Rig.connect("bench3", lock=False) as rig:
+    print(rig.get_channels())
+    with rig.lock():  # Locked here, released when the block ends
+        rig.set_channel(3, "on")
+```
+
+Locks nest: the Rig stays Locked until every `rig.lock()` is released, and the Lock taken on connect lasts until `close()`. So `with rig.lock():` inside a script that Locked on connect leaves the Rig Locked after the block. Calling `.release()` on a Lock twice releases it once.
+
+To take the Lock from whoever holds it, after checking with them, pass `take_over=True` to `Rig.connect()` or `rig.lock()`. That's a Takeover. Their script's next change raises `LockedError` naming you, and their `close()` logs a warning instead of releasing your Lock. itch-py never takes over unless you ask.
+
+Closing releases the Lock and leaves the Channels as they are. A script that crashes or loses its connection leaves the Rig Locked. Running it again under the same Holder picks the Lock back up, with the Channels as it left them.
+
+Two scripts run by the same user on the same computer share a Holder, so they share the Lock: either can change the Rig, and closing either releases the Lock for both. Give each its own `holder=` if they must not share.
 
 ## Rename a Rig
 
@@ -110,7 +133,7 @@ Or from the command line:
 itch label itch-C02718 bench3
 ```
 
-`itch label` takes the same names as `Rig.connect()`, including a port or `tcp://host:port`.
+`itch label` takes the same names as `Rig.connect()`, including a port or `tcp://host:port`. It Locks the Rig while it renames it, so it fails with the Holder's name if someone else holds the Lock. `itch list` never Locks.
 
 ## Drive a DUT with a Profile
 

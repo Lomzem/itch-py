@@ -1,7 +1,7 @@
 """A stubbed USB bench: a port list for `comports()` and a fake `serial.Serial` behind it.
 
-It isn't a Rig: a free port answers `Hello` with a scripted reply, and `SetLogLevel`, and
-records what itch-py did to it.
+It isn't a Rig: a free port answers `Hello` with a scripted reply, grants `SetLogLevel`,
+`Lock` and `ReleaseLock`, and records what itch-py did to it.
 """
 
 from __future__ import annotations
@@ -22,7 +22,11 @@ from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
     Hello,
     HelloReply,
+    Lock,
+    LockReply,
     OkResponse,
+    ReleaseLock,
+    ReleaseLockReply,
     Request,
     SetLogLevel,
     SetLogLevelReply,
@@ -159,11 +163,17 @@ class _FakeSerial:
             request = decode(payload)
             assert isinstance(request, Request)
             self._target.requests.append(request)
-            if isinstance(request.body, Hello):
-                reply = OkResponse(request.request_id, self._target.hello)
-            else:
-                assert isinstance(request.body, SetLogLevel)
-                reply = OkResponse(request.request_id, SetLogLevelReply())
+            match request.body:
+                case Hello():
+                    reply = OkResponse(request.request_id, self._target.hello)
+                case SetLogLevel():
+                    reply = OkResponse(request.request_id, SetLogLevelReply())
+                case Lock():
+                    reply = OkResponse(request.request_id, LockReply())
+                case ReleaseLock():
+                    reply = OkResponse(request.request_id, ReleaseLockReply())
+                case other:
+                    raise AssertionError(f"the fake bench can't answer {other}")
             self._out += encode_frame(encode(reply))
         return len(data)
 
