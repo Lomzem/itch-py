@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import ipaddress
 import socket
 import time
 
@@ -11,6 +12,8 @@ from fake_bench import FakeBench
 from fake_network import FakeNetwork
 from scripted_rig import ACME_HELLO, answering
 from zeroconf import ServiceInfo
+from zeroconf._cache import DNSCache
+from zeroconf._dns import DNSAddress, DNSRecord, DNSService, DNSText
 
 from itch import (
     AmbiguousRigError,
@@ -217,3 +220,59 @@ def test_a_resolved_advertisement_keeps_a_dotted_label_and_needs_a_valid_hwid(
         parsed_addresses=["192.0.2.10"],
     )
     assert _mdns.to_advert(info) == advert
+
+
+NAME = f"bench3.{_mdns.SERVICE}"
+TTL = 120
+"""Seconds a Rig's records live in a cache."""
+
+
+def rig_records(
+    hardware_id: str, address: str, created: float = 0
+) -> tuple[DNSService, DNSText, DNSAddress]:
+    """The SRV, TXT and A records a Rig advertising `bench3` answers with, as they are cached."""
+    host = f"itch-{hardware_id[-8:].replace(':', '').lower()}.local."
+    txt = f"hwid={hardware_id}".encode()
+    return (
+        DNSService(NAME, 33, 1, TTL, 0, 0, 7878, host, created),
+        DNSText(NAME, 16, 1, TTL, bytes([len(txt)]) + txt, created),
+        DNSAddress(host, 1, 1, TTL, ipaddress.IPv4Address(address).packed, created=created),
+    )
+
+
+def readdressed(cache: DNSCache, hardware_id: str, address: str, now: float) -> None:
+    """Caches a Rig's re-announced address as zeroconf does, flushing its old one."""
+    *_, record = rig_records(hardware_id, address, now)
+    cache.async_mark_unique_records_older_than_1s_to_expire(
+        {(record.name, record.type, record.class_)}, [record], now
+    )
+    cache.async_add_records([record])
+
+
+def test_a_rig_that_moves_is_advertised_at_its_new_address() -> None:
+    cache, now = DNSCache(), 60_000.0
+    cache.async_add_records(rig_records(HW, "192.0.2.10", now - 30_000))
+    readdressed(cache, HW, "192.0.2.20", now)
+    assert _mdns.current_adverts(cache, NAME, now) == [
+        _mdns.Advert("bench3", "192.0.2.20", 7878, HW)
+    ]
+
+
+def test_an_expired_address_is_not_advertised() -> None:
+    cache, now = DNSCache(), 1_000_000.0
+    service, text, _ = rig_records(HW, "192.0.2.10", now)
+    *_, expired = rig_records(HW, "192.0.2.10", now - (TTL + 1) * 1000)
+    cache.async_add_records([service, text, expired])
+    assert _mdns.current_adverts(cache, NAME, now) == []
+
+
+def test_two_rigs_answering_for_one_label_are_both_advertised() -> None:
+    cache, now = DNSCache(), 60_000.0
+    other = "60:55:F9:C0:27:19"
+    records: list[DNSRecord] = [*rig_records(HW, "192.0.2.10", now)]
+    records += rig_records(other, "192.0.2.11", now)
+    cache.async_add_records(records)
+    assert sorted(_mdns.current_adverts(cache, NAME, now), key=lambda a: a.address) == [
+        _mdns.Advert("bench3", "192.0.2.10", 7878, HW),
+        _mdns.Advert("bench3", "192.0.2.11", 7878, other),
+    ]
