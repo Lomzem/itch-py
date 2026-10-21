@@ -242,7 +242,7 @@ rig.set_address(IPv4Interface("192.0.2.10/24"), gateway=IPv4Address("192.0.2.1")
 rig.use_dhcp()  # back to DHCP
 ```
 
-The Rig applies exactly what it is told, with no conflict check and no fallback to DHCP. A wrong static address strands the Rig's Wi-Fi until you fix it over USB. itch-py refuses a zero, broadcast or multicast address or gateway, and a /0 prefix, but can't tell whether the address suits your network.
+The Rig applies exactly what it is told, with no conflict check and no fallback to DHCP. A wrong static address strands the Rig's Wi-Fi until you fix it over USB. itch-py refuses a zero, broadcast or multicast address, a broadcast or multicast gateway, and a /0 prefix, but can't tell whether the address suits your network. A zero gateway means none, as leaving it out does.
 
 Or from the command line, which Locks the Rig for each command:
 

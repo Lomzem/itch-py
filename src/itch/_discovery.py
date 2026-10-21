@@ -9,10 +9,10 @@ import dataclasses
 from collections.abc import Iterable
 from typing import Literal
 
-from itch import _mdns
+from itch import _mdns, _wire
 from itch._connection import Connection, same_hardware_id
 from itch._endpoints import held, release, tcp_endpoint, usb_endpoint
-from itch._errors import AmbiguousRigError, ItchError, RigNotFoundError
+from itch._errors import AmbiguousRigError, DisconnectedError, ItchError, RigNotFoundError
 from itch._transport import TcpTransport
 from itch._usb import PortInUse, UsbPort, UsbTransport, usb_ports
 
@@ -108,8 +108,8 @@ def _find_named(
     """Connects to the Rig `name` picks once no USB port or Hardware ID matched it.
 
     Opens every free USB Rig to find the one labelled `name`, closing the rest, and counts a
-    Rig this process has connected if it is labelled `name`. If none is, browses the network
-    for the Rig advertising `name` as its Label or Hardware ID.
+    Rig this process has connected if it is labelled `name` now. If none is, browses the
+    network for the Rig advertising `name` as its Label or Hardware ID.
     """
     found: list[RigInfo] = []
     matches: list[Connection] = []
@@ -117,12 +117,13 @@ def _find_named(
     """Ports where this process has connected the Rig labelled `name`, to connect again."""
     try:
         for port in ports:
-            if (rig := held(usb_endpoint(port.device))) is not None:
-                info = RigInfo(port.device, rig.hardware_id, rig.label, rig.firmware_version)
+            if (held_here := held(usb_endpoint(port.device))) is not None and (
+                info := _held_info(port, held_here)
+            ):
+                found.append(info)
                 if _same_label(info, name):
                     mine.append(port)
-                    found.append(info)
-                    continue
+                continue
             connection, info = _probe(port)
             found.append(info)
             if connection is None:
@@ -249,6 +250,24 @@ def _open(port: UsbPort, log_level: int | None) -> Connection:
         raise RigNotFoundError(
             f"Rig {port.hardware_id} on {port.device} is in use by another program."
         ) from None
+
+
+def _held_info(port: UsbPort, connection: Connection) -> RigInfo | None:
+    """The Rig this process has connected on `port`, asked its Label again over `connection`,
+    since another connection may have renamed it, without disturbing its Rig.
+
+    `None` if the connection has dropped, as after a reboot, after closing it so the port can be
+    probed. Its Rig stays registered, so connecting there again still says it was replaced.
+    """
+    try:
+        connection.name = connection.request(_wire.Hello(), _wire.HelloReply).label
+    except DisconnectedError:
+        connection.close()
+        return None
+    except ItchError as err:
+        return RigInfo(port.device, connection.hardware_id, None, None, str(err))
+    firmware_version = connection.hello.firmware_version
+    return RigInfo(port.device, connection.hardware_id, connection.name, firmware_version)
 
 
 def _probe(port: UsbPort) -> tuple[Connection | None, RigInfo]:

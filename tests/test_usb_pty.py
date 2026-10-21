@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import os
 import select
 import socket
@@ -16,6 +17,7 @@ import pytest
 from conftest import RunningSim
 from serial.tools import list_ports
 from serial.tools.list_ports_common import ListPortInfo
+from tcp_client import other_client
 
 from itch import (
     DisconnectedError,
@@ -25,6 +27,7 @@ from itch import (
     _connection,
     list_rigs,
 )
+from itch._wire import SetLabel, SetLabelReply
 
 SIM_HARDWARE_ID = "02:00:00:51:4D:01"
 
@@ -137,6 +140,90 @@ def test_listing_an_open_usb_rig_leaves_it_connected_and_in_use(pty_rig: str) ->
         assert info.in_use
         assert rig.status().holder == "alice"
         assert rig.get_all() == 0x8011
+
+
+def test_dropping_a_usb_rig_releases_its_lock_and_port(pty_rig: str) -> None:
+    rig = Rig.connect(pty_rig, holder="alice")
+    rig.set(1)
+    del rig
+    gc.collect()
+
+    with Rig.connect(pty_rig, holder="bob") as new:
+        assert new.status().holder == "bob"
+        assert new.get_all() == 0x0001
+
+
+def test_usb_label_reconnect_recovers_after_a_failed_serial_write(pty_rig: str) -> None:
+    import termios  # The pty fixture skips this test outside Linux.
+
+    with Rig.connect(pty_rig, holder="alice") as old:
+        old.set(1)
+        port = os.open(pty_rig, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        try:
+            termios.tcflow(port, termios.TCOOFF)
+            with pytest.raises(DisconnectedError):
+                old.set(2)  # Real pySerial times out while the pty's output is suspended.
+        finally:
+            termios.tcflow(port, termios.TCOON)
+            os.close(port)
+
+        with Rig.connect(old.label, holder="alice", browse_timeout=0) as new:
+            assert new.status().holder == "alice"
+            assert new.get_all() == 0x0001
+            with pytest.raises(DisconnectedError, match="connected to the same Rig again"):
+                old.get_all()
+            old.disconnect()
+            assert new.status().holder == "alice"
+
+
+@pytest.mark.parametrize("lookup", ["new-label", "old-label"])
+def test_usb_label_lookup_uses_the_label_after_an_external_rename(
+    pty_rig: str, own_sim: RunningSim, lookup: str
+) -> None:
+    with Rig.connect(pty_rig, holder="alice") as old:
+        old.set(1)
+        old_label = old.label
+        with other_client(own_sim.url) as renamer:
+            renamer.request(SetLabel("alice", "new-bench"), SetLabelReply)
+
+        if lookup == "new-label":
+            with Rig.connect("new-bench", holder="alice", browse_timeout=0) as new:
+                assert new.label == "new-bench"
+                assert new.hardware_id == SIM_HARDWARE_ID
+                assert new.status().holder == "alice"
+                assert new.get_all() == 0x0001
+                with pytest.raises(DisconnectedError, match="connected to the same Rig again"):
+                    old.get_all()
+        else:
+            with (
+                pytest.raises(RigNotFoundError),
+                Rig.connect(old_label, holder="alice", browse_timeout=0),
+            ):
+                pass
+            assert old.status().holder == "alice"
+            assert old.get_all() == 0x0001
+
+
+def test_a_failed_label_lookup_preserves_a_dropped_rigs_live_lock(
+    pty_rig: str, own_sim: RunningSim
+) -> None:
+    with Rig.connect(own_sim.url, lock=False) as observer:
+        rig = Rig.connect(pty_rig, holder="alice", lock=False)
+        rig.set(1)
+        held = rig.lock()
+        del rig
+        gc.collect()
+        try:
+            assert observer.status().holder == "alice"
+            with pytest.raises(RigNotFoundError, match="not found"):
+                Rig.connect("absent-bench", holder="bob", browse_timeout=0)
+            assert observer.status().holder == "alice"
+            assert observer.get_all() == 0x0001
+        finally:
+            held.release()
+        assert observer.status().holder is None
+        with Rig.connect(pty_rig, holder="alice", lock=False):
+            pass
 
 
 def test_over_usb_silence_after_a_network_change_is_unexpected(
