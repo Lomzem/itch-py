@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 from itch._discovery import rig_table
 from itch._errors import ItchError
+from itch._mdns import BROWSE_TIMEOUT
 from itch._rig import Rig, list_rigs
 
 
@@ -17,8 +18,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser(
         "list",
-        help="show the Rigs plugged in over USB",
-        description="Show the Rigs plugged in over USB, without disturbing those in use.",
+        help="show the Rigs plugged in over USB or on the network",
+        description=(
+            "Show the Rigs plugged in over USB, without disturbing those in use, then those "
+            f"advertised on the network within {BROWSE_TIMEOUT:g} seconds."
+        ),
     )
     label = commands.add_parser(
         "label",
@@ -31,7 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "list":
             rigs = list_rigs()
-            print("\n".join(rig_table(rigs)) if rigs else "No Rig is plugged in.")
+            print("\n".join(rig_table(rigs)) if rigs else "No Rig is plugged in or on the network.")
             return 0
         with Rig.connect(args.rig) as rig:
             old = rig.label

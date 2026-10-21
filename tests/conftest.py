@@ -22,12 +22,24 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fake_network import FakeNetwork
 from itch_release import TAG, VECTORS_ASSET, Release, fetch
 
-from itch import Rig
+from itch import Rig, _mdns
 
 ITCH_PY = Path(__file__).resolve().parent.parent
 READY = "itch-sim listening on "
+
+
+@pytest.fixture(autouse=True)
+def network(monkeypatch: pytest.MonkeyPatch) -> FakeNetwork:
+    """The network discovery browses, empty unless a test advertises Rigs on it.
+
+    Every test gets it, so none sends real multicast.
+    """
+    fake = FakeNetwork()
+    monkeypatch.setattr(_mdns, "browse", fake)
+    return fake
 
 
 def _itch_repo() -> Path | None:

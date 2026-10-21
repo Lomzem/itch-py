@@ -135,7 +135,8 @@ def test_a_label_not_found_reports_the_rigs_in_use(bench: FakeBench) -> None:
     with pytest.raises(RigNotFoundError) as raised:
         Rig.connect("bench4")
     assert str(raised.value).splitlines()[0] == (
-        "Rig 'bench4' not found; 1 Rig is in use by another program: /dev/ttyACM1. Rigs found:"
+        "Rig 'bench4' not found over USB or on the network; 1 Rig is in use by another program: "
+        "/dev/ttyACM1. Rigs found:"
     )
 
 
@@ -225,7 +226,7 @@ def test_itch_list_says_when_no_rig_is_plugged_in(
     bench: FakeBench, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["list"]) == 0
-    assert capsys.readouterr().out == "No Rig is plugged in.\n"
+    assert capsys.readouterr().out == "No Rig is plugged in or on the network.\n"
 
 
 def _broken(bench: FakeBench, device: str, hardware_id: str) -> None:
@@ -270,7 +271,7 @@ def test_a_label_not_found_lists_the_rigs_that_fail(bench: FakeBench) -> None:
     with pytest.raises(RigNotFoundError) as raised:
         Rig.connect("bench4")
     lines = str(raised.value).splitlines()
-    assert lines[0] == "Rig 'bench4' not found. Rigs found:"
+    assert lines[0] == "Rig 'bench4' not found over USB or on the network. Rigs found:"
     assert lines[2].startswith("  /dev/ttyACM0  60:55:F9:C0:27:18  error  Rig ")
 
 
