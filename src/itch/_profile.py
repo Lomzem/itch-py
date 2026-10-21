@@ -18,6 +18,9 @@ from itch._rig import ALL_CHANNELS, CHANNELS, ChannelState, Position, Rig
 V = TypeVar("V", bound=LiteralString)
 P = TypeVar("P", bound="Profile")
 
+_NO_STATE: Any = object()
+"""`Profile.apply()`'s state when it is given Fields instead."""
+
 RESERVED = frozenset(
     (
         "set",
@@ -342,6 +345,11 @@ class Encoding(Generic[V]):
         return self._selection.describe()
 
 
+Setting = str | tuple[str, int] | Encoding[Any]
+"""What `dut.apply()` takes for each Field: a Value or alias, a `(Value, number)` tuple, or an
+`Encoding` of that Field."""
+
+
 class _Selection:
     """One Encoding of one Value of a Field, with the Channel bits it sets."""
 
@@ -431,9 +439,35 @@ class Profile:
         `dut.write(set=[1, 5], clear=[3])`."""
         self._rig.write(set=set, clear=clear)
 
-    def apply(self, state: int, /, *, mask: int = ALL_CHANNELS) -> None:
-        """Writes a 16-bit Channel state, as `Rig.apply()` does: `dut.apply(0x6742)`."""
-        self._rig.apply(state, mask=mask)
+    @overload
+    def apply(self, state: int, /, *, mask: int = ALL_CHANNELS) -> None: ...
+    @overload
+    def apply(self, /, **settings: Setting) -> None: ...
+    def apply(self, state: object = _NO_STATE, /, **settings: object) -> None:
+        """Writes a 16-bit Channel state, as `Rig.apply()` does: `dut.apply(0x6742)`, or sets
+        several Fields in one write: `dut.apply(resolution="1080p", mode=("night", 2))`.
+
+        Each Field takes a Value or alias (Encoding 1), a `(Value, number)` tuple, or one of its
+        `Encoding`s. Everything is checked before the write, which changes only those Fields'
+        Channels. If two Fields need a shared Channel in different positions, raises
+        `BatchConflictError` and changes nothing.
+        """
+        if state is not _NO_STATE:
+            mask = settings.pop("mask", ALL_CHANNELS)
+            if settings:
+                raise TypeError(
+                    "apply() takes either a Channel state like dut.apply(0x6742) or Fields like "
+                    f"dut.apply({next(iter(settings))}=...), not both."
+                )
+            self._rig.apply(cast(int, state), mask=cast(int, mask))
+            return
+        if not settings:
+            raise ValueError(
+                "apply() needs a Channel state or at least one Field, such as "
+                f"dut.apply({next(iter(self._fields), 'field')}=...)."
+            )
+        selections = [self._setting(name, setting) for name, setting in settings.items()]
+        self._rig._write_channels(*_union(selections, ""))
 
     def set_all(self) -> None:
         """Turns every Channel on, in one write."""
@@ -483,38 +517,67 @@ class Profile:
             batch = self._batch
         finally:
             self._batch = None
-        if not batch:
-            return
-        mask = values = 0
-        for selection in batch.values():
-            field_mask, bits = selection.field._mask, selection.bits
-            if clash := mask & field_mask & (values ^ bits):
-                bit = clash & -clash
-                other = next(s for s in batch.values() if s.field._mask & bit)
-                needs, other_needs = _position(bits, bit), _position(~bits, bit)
-                raise BatchConflictError(
-                    f"CH{bit.bit_length()}: {other.label} needs {other_needs}, but "
-                    f"{selection.label} needs {needs}. Set only one of them in a batch, or pick "
-                    "Values that agree. No Channels were changed."
-                )
-            mask |= field_mask
-            values = values & ~field_mask | bits
-        self._rig._write_channels(mask, values)
+        if batch:
+            self._rig._write_channels(*_union(list(batch.values()), " in a batch"))
 
     def __str__(self) -> str:
         """Every Field's current Value on one line, for a test log."""
         state = self._rig._read_channels()
         return f"{type(self).__name__}({', '.join(f._show(state) for f in self._fields.values())})"
 
-    def _write(self, selection: _Selection) -> None:
-        """Writes one Field's Encoding, or keeps it for the open batch.
+    def _setting(self, name: str, setting: object) -> _Selection:
+        """The Encoding one Field setting of `apply()` names. Raises as `FieldOnRig.set()` does."""
+        if (f := self._fields.get(name)) is None:
+            names = list(self._fields)
+            raise ValueError(
+                f'{type(self).__name__} has no Field "{name}".{_did_you_mean(name, names)} '
+                f"Choose one of: {', '.join(names)}."
+            )
+        if isinstance(setting, Encoding):
+            selection = cast(Encoding[Any], setting)._selection
+            if selection.field is not f:
+                raise ValueError(
+                    f"{name}: {selection.describe()} is an Encoding of {selection.field.name}, "
+                    f"not {name}."
+                )
+            return selection
+        if isinstance(setting, str):
+            return f._select(setting, 1)
+        if isinstance(setting, tuple) and len(cast(tuple[object, ...], setting)) == 2:
+            value, number = cast(tuple[object, object], setting)
+            if isinstance(value, str):
+                return f._select(value, cast(int, number))
+        raise TypeError(
+            f"{name} should be a Value, a (Value, number) tuple or an Encoding, not {setting!r}."
+        )
 
-        Every Field write goes through here.
-        """
+    def _write(self, selection: _Selection) -> None:
+        """Writes one Field's Encoding, or keeps it for the open batch."""
         if self._batch is not None:
             self._batch[selection.field] = selection
         else:
             self._rig._write_channels(selection.field._mask, selection.bits)
+
+
+def _union(selections: list[_Selection], where: str) -> tuple[int, int]:
+    """The mask and values of one write setting every Encoding in `selections`, later ones
+    winning on a Field's own Channels. Raises `BatchConflictError` if two Fields disagree on a
+    shared Channel; `where` ends its advice, such as `" in a batch"`."""
+    mask = values = 0
+    for selection in selections:
+        field_mask, bits = selection.field._mask, selection.bits
+        if clash := mask & field_mask & (values ^ bits):
+            bit = clash & -clash
+            other = next(s for s in selections if s.field._mask & bit)
+            needs, other_needs = _position(bits, bit), _position(~bits, bit)
+            raise BatchConflictError(
+                f"CH{bit.bit_length()}: {other.label} needs {other_needs}, but "
+                f"{selection.label} needs {needs}. Set only one of them{where}, or pick Values "
+                "that agree. No Channels were changed."
+            )
+        mask |= field_mask
+        values = values & ~field_mask | bits
+    return mask, values
 
 
 def check_profile(profile: object) -> None:
