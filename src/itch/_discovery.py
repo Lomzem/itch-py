@@ -6,13 +6,12 @@ A name is looked for over USB first. Only if no USB Rig has it does a lookup bro
 from __future__ import annotations
 
 import dataclasses
-import os
-import sys
 from collections.abc import Iterable
 from typing import Literal
 
 from itch import _mdns
 from itch._connection import Connection, same_hardware_id
+from itch._endpoints import held, release, tcp_endpoint, usb_endpoint
 from itch._errors import AmbiguousRigError, ItchError, RigNotFoundError
 from itch._transport import TcpTransport
 from itch._usb import PortInUse, UsbPort, UsbTransport, usb_ports
@@ -95,7 +94,7 @@ def find_rig(name: str | None, log_level: int | None, browse_timeout: float) -> 
             )
         )
     for port in ports:
-        if _same_port(port.device, name):
+        if usb_endpoint(port.device) == usb_endpoint(name):
             return _open(port, log_level)
     for port in ports:
         if same_hardware_id(port.hardware_id, name):
@@ -108,13 +107,22 @@ def _find_named(
 ) -> Connection:
     """Connects to the Rig `name` picks once no USB port or Hardware ID matched it.
 
-    Opens every free USB Rig to find the one labelled `name`, closing the rest. If none is,
-    browses the network for the Rig advertising `name` as its Label or Hardware ID.
+    Opens every free USB Rig to find the one labelled `name`, closing the rest, and counts a
+    Rig this process has connected if it is labelled `name`. If none is, browses the network
+    for the Rig advertising `name` as its Label or Hardware ID.
     """
     found: list[RigInfo] = []
     matches: list[Connection] = []
+    mine: list[UsbPort] = []
+    """Ports where this process has connected the Rig labelled `name`, to connect again."""
     try:
         for port in ports:
+            if (rig := held(usb_endpoint(port.device))) is not None:
+                info = RigInfo(port.device, rig.hardware_id, rig.label, rig.firmware_version)
+                if _same_label(info, name):
+                    mine.append(port)
+                    found.append(info)
+                    continue
             connection, info = _probe(port)
             found.append(info)
             if connection is None:
@@ -123,7 +131,9 @@ def _find_named(
                 matches.append(connection)
             else:
                 connection.close()
-        if len(matches) == 1:
+        if len(matches) + len(mine) == 1:
+            if mine:
+                return _open(mine[0], log_level)
             (connection,) = matches
             if log_level is not None:
                 connection.set_log_level(log_level)
@@ -134,11 +144,11 @@ def _find_named(
         raise
     for connection in matches:
         connection.close()
-    if matches:
+    if matches or mine:
         raise AmbiguousRigError(
             _with_table(
-                f"{len(matches)} Rigs are labelled {name!r}; pass Rig.connect() the Hardware ID "
-                "or port of one:",
+                f"{len(matches) + len(mine)} Rigs are labelled {name!r}; pass Rig.connect() the "
+                "Hardware ID or port of one:",
                 [info for info in found if _same_label(info, name)],
             )
         )
@@ -183,6 +193,7 @@ def _find_advert(
             )
         )
     advert = matches[0]
+    release(tcp_endpoint((advert.address, advert.port)))  # A Rig this process connected to there.
     connection = Connection.open(TcpTransport(advert.address, advert.port))
     try:
         _check_identity(connection, advert, None if by_hardware_id else name)
@@ -229,6 +240,9 @@ def _advertises_label(advert: _mdns.Advert, label: str) -> bool:
 
 
 def _open(port: UsbPort, log_level: int | None) -> Connection:
+    """Connects to the Rig on `port`, first disconnecting a Rig this process has connected
+    there, which would hold the port."""
+    release(usb_endpoint(port.device))
     try:
         return _connect(port, log_level)
     except PortInUse:
@@ -264,12 +278,6 @@ def _info(port: UsbPort) -> RigInfo:
     if connection is not None:
         connection.close()
     return info
-
-
-def _same_port(device: str, name: str) -> bool:
-    if sys.platform == "win32":
-        return device.casefold() == name.casefold()
-    return os.path.realpath(device) == os.path.realpath(name)  # Such as /dev/serial/by-id/…
 
 
 def _same_label(info: RigInfo, label: str) -> bool:

@@ -9,11 +9,16 @@ import time
 import pytest
 from conftest import RunningSim
 from scripted_rig import ACME_HELLO, ScriptedRig, after_connecting
+from tcp_client import other_client
 
 from itch import LockedError, Rig
 from itch._wire import (
     ErrorCode,
     ErrorResponse,
+    GetChannels,
+    GetChannelsReply,
+    GetStatus,
+    GetStatusReply,
     Hello,
     Lock,
     LockReply,
@@ -24,12 +29,15 @@ from itch._wire import (
     Request,
     SetLogLevel,
     SetLogLevelReply,
+    WriteChannels,
+    WriteChannelsReply,
 )
 
 
 def test_a_locked_rig_refuses_another_holder_who_can_still_look(own_sim: RunningSim) -> None:
-    with Rig.connect(own_sim.url, holder="alice") as alice:
-        alice.set_channel(1, "on")
+    with other_client(own_sim.url) as alice:
+        alice.request(Lock("alice", takeover=False), LockReply)
+        alice.request(WriteChannels("alice", 0x0001, 0x0001), WriteChannelsReply)
         with pytest.raises(LockedError, match="Locked by alice; pass take_over=True"):
             Rig.connect(own_sim.url, holder="bob")
         with Rig.connect(own_sim.url, holder="bob", lock=False) as bob:
@@ -37,7 +45,8 @@ def test_a_locked_rig_refuses_another_holder_who_can_still_look(own_sim: Running
             assert bob.status().holder == "alice"
             with pytest.raises(LockedError, match="Locked by alice"):
                 bob.set_channel(2, "on")
-    with Rig.connect(own_sim.url, holder="bob") as bob:  # Alice's close released it.
+        alice.request(ReleaseLock("alice"), ReleaseLockReply)
+    with Rig.connect(own_sim.url, holder="bob") as bob:  # Alice released it.
         assert bob.status().holder == "bob"
 
 
@@ -46,9 +55,10 @@ def test_a_takeover_refuses_the_old_holder_whose_close_only_warns(
 ) -> None:
     alice = Rig.connect(own_sim.url, holder="alice")
     alice.set_channel(1, "on")
-    with Rig.connect(own_sim.url, holder="bob", take_over=True) as bob:
-        assert bob.status().holder == "bob"
-        assert bob.get_channel(1) == "on"
+    with other_client(own_sim.url) as bob:
+        bob.request(Lock("bob", takeover=True), LockReply)
+        assert bob.request(GetStatus(), GetStatusReply).holder == "bob"
+        assert bob.request(GetChannels(), GetChannelsReply).state == 0x0001
         with pytest.raises(LockedError, match="Locked by bob"):
             alice.set_channel(2, "on")
         with caplog.at_level(logging.WARNING, logger="itch"):
@@ -56,7 +66,8 @@ def test_a_takeover_refuses_the_old_holder_whose_close_only_warns(
         assert [r.message for r in caplog.records] == [
             "Rig itch-514D01 was taken over before alice released its Lock."
         ]
-        assert bob.status().holder == "bob"
+        assert bob.request(GetStatus(), GetStatusReply).holder == "bob"
+        bob.request(ReleaseLock("bob"), ReleaseLockReply)
 
 
 def test_the_same_holder_picks_its_lock_back_up_after_a_crash(own_sim: RunningSim) -> None:

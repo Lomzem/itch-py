@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal, Self, TypeVar, overload
 from itch import _mdns, _wire
 from itch._connection import Connection
 from itch._discovery import RigInfo, find_rig, rig_infos
+from itch._endpoints import claim, forget
 from itch._errors import DevelopmentBuildWarning, DisconnectedError, ItchError, LockedError
 from itch._status import Status, from_reply
 from itch._transport import open_tcp
@@ -65,6 +66,7 @@ class Rig:
         `itch` log handler that Locks from the warning `_send_release()` logs."""
         self._left_locked = False
         """Set if the connection dropped before `ReleaseLock` could be sent."""
+        claim(connection.endpoint, self)  # Disconnects an older Rig this process has there.
 
     @overload
     @classmethod
@@ -131,12 +133,18 @@ class Rig:
         `browse_timeout` seconds, 3 by default, and connects to the Rig advertising it.
         `tcp://host:port` reaches `itch-sim` or a Rig on the network without browsing.
 
+        Connecting to a USB port or network address this script has already connected to, as
+        when a notebook cell runs again, first disconnects the older connection, releasing its
+        Lock. Using the older `Rig`, or a DUT on it, then raises `DisconnectedError`.
+
         `holder` names this script to colleagues in every change it makes, 1 to 64 bytes of
         UTF-8. It defaults to `user@host`, cut short to 64 bytes. Two scripts run by the same
         user on the same computer share it, and so share the Lock.
 
-        Connecting Locks the Rig under `holder` until `disconnect()`, so nobody else's script can
-        change it, as `rig.lock()` does. Pass `lock=False` to only look at a Rig someone else
+        Connecting Locks the Rig under `holder` until `disconnect()`, or until this script ends
+        normally or on an uncaught exception, so nobody else's script can change it, as
+        `rig.lock()` does. A killed script leaves its Lock, which `holder` picks back up on
+        connecting again. Pass `lock=False` to only look at a Rig someone else
         has Locked: changes then succeed only while the Rig is unlocked. Pass `take_over=True`
         to take the Lock from whoever holds it; their next change then raises `LockedError`.
 
@@ -420,14 +428,11 @@ class Rig:
         The Channels stay as they are: the Rig keeps them for the next script. Calling it again
         does nothing, and anything else then raises `DisconnectedError`. If someone took the
         Lock over, or releasing fails, it logs a warning to the `itch` logger instead of
-        raising.
+        raising. A script that ends without it, normally or on an uncaught exception,
+        disconnects as it exits.
         """
-        try:
-            self._release_lock()
-        except ItchError as err:
-            _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.label, err)
-        finally:
-            self._connection.close()
+        forget(self._connection.endpoint, self)
+        self._disconnect()
 
     def close(self) -> None:
         """Does what `disconnect()` does."""
@@ -446,6 +451,18 @@ class Rig:
 
     def __repr__(self) -> str:
         return f"<Rig {self.label} {self.hardware_id} firmware {self.firmware_version}>"
+
+    def _replaced(self) -> None:
+        """Disconnects, because this process is connecting to the same Rig again."""
+        self._disconnect(replaced=True)
+
+    def _disconnect(self, *, replaced: bool = False) -> None:
+        try:
+            self._release_lock()
+        except ItchError as err:
+            _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.label, err)
+        finally:
+            self._connection.close(replaced=replaced)
 
     def _write_channels(self, mask: int, values: int) -> None:
         """One Mask write: the Channels in `mask` take their bits from `values`."""
