@@ -254,11 +254,10 @@ def _open(port: UsbPort, log_level: int | None) -> Connection:
 
 def _held_info(port: UsbPort, rig: Connected) -> RigInfo | None:
     """The Rig this process has connected on `port`, as it labels itself now. `None` if that
-    connection has dropped, as after a reboot, once it is disconnected to free the port."""
+    connection has dropped, as after a reboot, and is now closed, so the port can be probed."""
     try:
         rig._refresh()  # pyright: ignore[reportPrivateUsage]  # Not part of Rig's API.
     except DisconnectedError:
-        rig.disconnect()
         return None
     except ItchError as err:
         return RigInfo(port.device, rig.hardware_id, None, None, str(err))

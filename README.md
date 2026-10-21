@@ -107,7 +107,6 @@ Connecting Locks the Rig (see [Sharing a Rig](#sharing-a-rig)). Any of these rel
 
 - `rig.disconnect()`;
 - leaving a `with Rig.connect(...)` block, including on an exception;
-- the script no longer referring to the `rig`, once Python frees it, as after `Rig.connect("bench3").set(3)`;
 - the script ending without either, normally or on an uncaught exception.
 
 Disconnecting never changes the Channels: the Rig keeps them, so the next script, or a reconnect, finds them as this one left them. Calling `disconnect()` again does nothing, and any read or change on that `rig` then raises `DisconnectedError`.

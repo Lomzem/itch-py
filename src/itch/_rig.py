@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import functools
 import getpass
 import logging
 import socket
 import threading
 import warnings
-import weakref
 from collections.abc import Callable, Iterable, Mapping
 from ipaddress import IPv4Address, IPv4Interface
 from types import TracebackType
@@ -70,11 +70,9 @@ class Rig:
         """Sent with every change, so a Rig Locked under this name accepts it."""
         self._label = connection.hello.label
         self._locks = _Locks(connection, holder)
-        self._disconnect = weakref.finalize(self, _disconnect, self._locks, connection)
-        """Releases the Lock and closes the connection, once: on `disconnect()`, when the script
-        drops the Rig without it, or at exit. It refers only to what it closes, not to the Rig,
-        which would keep the Rig alive."""
-        claim(connection.endpoint, self)  # Disconnects an older Rig this process has there.
+        # Disconnects an older Rig this process has there. Disconnecting this one needs only its
+        # Locks and connection, so it still happens at exit if the script drops this Rig.
+        claim(connection.endpoint, self, functools.partial(_disconnect, self._locks, connection))
 
     @overload
     @classmethod
@@ -149,13 +147,12 @@ class Rig:
         UTF-8. It defaults to `user@host`, cut short to 64 bytes. Two scripts run by the same
         user on the same computer share it, and so share the Lock.
 
-        Connecting Locks the Rig under `holder` until `disconnect()`, until the script no longer
-        refers to the Rig, or until it ends normally or on an uncaught exception, so nobody
-        else's script can change it, as `rig.lock()` does. A killed script leaves its Lock, which
-        `holder` picks back up on connecting again. Pass `lock=False` to only look at a Rig
-        someone else has Locked: changes then succeed only while the Rig is unlocked. Pass
-        `take_over=True` to take the Lock from whoever holds it; their next change then raises
-        `LockedError`.
+        Connecting Locks the Rig under `holder` until `disconnect()`, or until this script ends
+        normally or on an uncaught exception, so nobody else's script can change it, as
+        `rig.lock()` does. A killed script leaves its Lock, which `holder` picks back up on
+        connecting again. Pass `lock=False` to only look at a Rig someone else
+        has Locked: changes then succeed only while the Rig is unlocked. Pass `take_over=True`
+        to take the Lock from whoever holds it; their next change then raises `LockedError`.
 
         Raises `RigNotFoundError` or `AmbiguousRigError`, listing the Rigs found, if `name`
         doesn't pick out one Rig, and `ItchError` if the Rig that answers has another
@@ -230,7 +227,7 @@ class Rig:
         that takes the Lock from them, and their next change raises `LockedError`.
         """
         self._locks.take(take_over)
-        return RigLock(self._release_one)
+        return RigLock(self._locks.release_one)
 
     def set(self, *channels: int) -> None:
         """Turns `channels` on, in one write, leaving the rest as they are: `rig.set(1, 5)`.
@@ -409,12 +406,11 @@ class Rig:
         The Channels stay as they are: the Rig keeps them for the next script. Calling it again
         does nothing, and anything else then raises `DisconnectedError`. If someone took the
         Lock over, or releasing fails, it logs a warning to the `itch` logger instead of
-        raising. A Rig the script no longer refers to disconnects once Python frees it, and one
-        still connected as the script ends, normally or on an uncaught exception, disconnects as
-        it exits.
+        raising. A script that ends without it, normally or on an uncaught exception,
+        disconnects as it exits.
         """
         forget(self._connection.endpoint, self)
-        self._disconnect()
+        _disconnect(self._locks, self._connection)
 
     def __enter__(self) -> Self:
         return self
@@ -437,12 +433,19 @@ class Rig:
 
     def _replaced(self) -> None:
         """Disconnects, because this process is connecting to the same Rig again."""
-        self._disconnect.detach()
         _disconnect(self._locks, self._connection, replaced=True)
 
     def _refresh(self) -> None:
-        """Asks the Rig its Label again, since another connection may have renamed it."""
-        hello = self._connection.request(_wire.Hello(), _wire.HelloReply)
+        """Asks the Rig its Label again, since another connection may have renamed it.
+
+        Raises `DisconnectedError` if the connection has dropped, after closing it to free the
+        port. The Rig stays registered, so connecting there again still says it was replaced.
+        """
+        try:
+            hello = self._connection.request(_wire.Hello(), _wire.HelloReply)
+        except DisconnectedError:
+            self._connection.close()
+            raise
         self._label = self._connection.name = hello.label
 
     def _write_channels(self, mask: int, values: int) -> None:
@@ -459,15 +462,10 @@ class Rig:
         """The commanded state of all 16 Channels, bit 0 for CH1."""
         return self._connection.request(_wire.GetChannels(), _wire.GetChannelsReply).state
 
-    def _release_one(self) -> None:
-        """Releases one `RigLock`, and the Rig's Lock with the last. Through the Rig, so a live
-        `RigLock` keeps the Rig, and its Lock, alive."""
-        self._locks.release_one()
-
 
 class _Locks:
     """The Locks a script holds on a Rig over one connection. Kept apart from the `Rig`, so they
-    can still be released once the script drops the Rig."""
+    can still be released at exit if the script dropped the Rig."""
 
     def __init__(self, connection: Connection, holder: str) -> None:
         self._connection = connection
