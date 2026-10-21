@@ -153,6 +153,27 @@ def test_dropping_a_usb_rig_releases_its_lock_and_port(pty_rig: str) -> None:
         assert new.get_all() == 0x0001
 
 
+def test_usb_label_reconnect_recovers_after_a_failed_serial_write(pty_rig: str) -> None:
+    import termios  # The pty fixture skips this test outside Linux.
+
+    with Rig.connect(pty_rig, holder="alice") as old:
+        old.set(1)
+        port = os.open(pty_rig, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        try:
+            termios.tcflow(port, termios.TCOOFF)
+            with pytest.raises(DisconnectedError):
+                old.set(2)  # Real pySerial times out while the pty's output is suspended.
+        finally:
+            termios.tcflow(port, termios.TCOON)
+            os.close(port)
+
+        with Rig.connect(old.label, holder="alice", browse_timeout=0) as new:
+            assert new.status().holder == "alice"
+            assert new.get_all() == 0x0001
+            old.disconnect()
+            assert new.status().holder == "alice"
+
+
 @pytest.mark.parametrize("lookup", ["new-label", "old-label"])
 def test_usb_label_lookup_uses_the_label_after_an_external_rename(
     pty_rig: str, own_sim: RunningSim, lookup: str
