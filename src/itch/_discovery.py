@@ -100,13 +100,17 @@ def find_rig(name: str | None, log_level: int | None, browse_timeout: float) -> 
     for port in ports:
         if same_hardware_id(port.hardware_id, name):
             return _open(port, log_level)
-    return _find_label(ports, name, log_level, browse_timeout)
+    return _find_named(ports, name, log_level, browse_timeout)
 
 
-def _find_label(
-    ports: list[UsbPort], label: str, log_level: int | None, browse_timeout: float
+def _find_named(
+    ports: list[UsbPort], name: str, log_level: int | None, browse_timeout: float
 ) -> Connection:
-    """Connects to every free Rig to find the one labelled `label`, and closes the rest."""
+    """Connects to the Rig `name` picks once no USB port or Hardware ID matched it.
+
+    Opens every free USB Rig to find the one labelled `name`, closing the rest. If none is,
+    browses the network for the Rig advertising `name` as its Label or Hardware ID.
+    """
     found: list[RigInfo] = []
     matches: list[Connection] = []
     try:
@@ -115,7 +119,7 @@ def _find_label(
             found.append(info)
             if connection is None:
                 continue
-            if _same_label(info, label):
+            if _same_label(info, name):
                 matches.append(connection)
             else:
                 connection.close()
@@ -133,18 +137,18 @@ def _find_label(
     if matches:
         raise AmbiguousRigError(
             _with_table(
-                f"{len(matches)} Rigs are labelled {label!r}; pass Rig.connect() the Hardware ID "
+                f"{len(matches)} Rigs are labelled {name!r}; pass Rig.connect() the Hardware ID "
                 "or port of one:",
-                [info for info in found if _same_label(info, label)],
+                [info for info in found if _same_label(info, name)],
             )
         )
     adverts = _mdns.browse(browse_timeout)
-    if connection := _find_advert(adverts, label, log_level):
+    if connection := _find_advert(adverts, name, log_level):
         return connection
     found += _network_infos(adverts)
     if not found:
         raise RigNotFoundError(
-            f"Rig {label!r} not found: no Rig is plugged in, and none answered on the network "
+            f"Rig {name!r} not found: no Rig is plugged in, and none answered on the network "
             f"within {browse_timeout:g} s."
         )
     busy = [info.port for info in found if info.in_use]
@@ -156,7 +160,7 @@ def _find_label(
     )
     raise RigNotFoundError(
         _with_table(
-            f"Rig {label!r} not found over USB or on the network{in_use}. Rigs found:", found
+            f"Rig {name!r} not found over USB or on the network{in_use}. Rigs found:", found
         )
     )
 

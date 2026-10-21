@@ -21,19 +21,13 @@ from itch._errors import (
     ProtocolMismatchError,
     rig_error,
 )
-from itch._transport import Disconnected, TcpTransport, Transport
+from itch._transport import NETWORK_CONNECTIONS, Disconnected, TcpTransport, Transport
 
 REQUEST_TIMEOUT = 2.0
 """Seconds to wait for each reply."""
 
-NETWORK_CONNECTIONS = 4
-"""How many TCP connections a Rig serves at once, beside USB."""
-
 _LOG_DRAIN_TIMEOUT = 0.05
 """Seconds `close()` waits for Log Events still on their way."""
-
-_READ_POLL = 0.05
-"""Seconds the reader waits for each payload before checking whether to stop."""
 
 _Reply = TypeVar("_Reply", bound=_wire.ReplyBody)
 
@@ -74,7 +68,6 @@ class Connection:
         """The user's `log_level`: Rig records below it aren't forwarded."""
         self._events: queue.SimpleQueue[tuple[_wire.LogEvent, int] | None] = queue.SimpleQueue()
         """Log Events for the dispatcher, each with the user's level when it arrived."""
-        self._stop_reading = threading.Event()
         self._reader = threading.Thread(
             target=self._read, name=f"itch reader {self.name}", daemon=True
         )
@@ -107,7 +100,7 @@ class Connection:
             except DisconnectedError as err:
                 if not isinstance(transport, TcpTransport):
                     raise
-                # A Rig refuses a fifth TCP connection by closing it, without saying why.
+                # The simulator refuses a fifth TCP connection by closing it, without saying why.
                 raise ItchError(
                     f"Rig at {transport.name} closed the connection before replying to Hello; "
                     f"it may already have {NETWORK_CONNECTIONS} network connections."
@@ -148,7 +141,8 @@ class Connection:
     def request(
         self, body: _wire.RequestBody, reply: type[_Reply], *, changes_network: bool = False
     ) -> _Reply:
-        """Sends `body` and returns its reply, sending it once more if the Rig stays silent.
+        """Sends `body` and returns its reply, sending it once more if the Rig stays silent,
+        unless the Rig has accepted a network change over TCP.
 
         Raises the `ItchError` for the Rig's error reply, `NotRespondingError` if it stays
         silent, `DisconnectedError` if the connection fails or has failed, and `ItchError` for
@@ -186,7 +180,7 @@ class Connection:
                 if self._disconnect is None:
                     self._disconnect = Disconnected("closed")
                 self._state.notify_all()
-            self._stop_reading.set()
+            self._transport.stop()  # Wakes the reader.
             self._join(self._reader)
             self._transport.close()
 
@@ -207,11 +201,14 @@ class Connection:
         reply: type[_Reply],
         on_reply: Callable[[], None] | None = None,
     ) -> _Reply:
-        """Sends `body` up to twice. Call it holding `_lock`.
+        """Sends `body` up to twice, or once after a network change. Call it holding `_lock`.
 
         `on_reply` runs on the reader thread as it takes the reply, before it reads on.
         """
-        for _ in range(2):
+        with self._state:
+            # A Rig silent since a network change has moved, so sending again only waits.
+            attempts = 1 if self._network_changed else 2
+        for _ in range(attempts):
             if (answer := self._attempt(body, reply, on_reply)) is not None:
                 return answer
         with self._state:
@@ -275,10 +272,10 @@ class Connection:
     def _read(self) -> None:
         """The reader thread: receives every payload until `close()` or a disconnect."""
         try:
-            while not self._stop_reading.is_set():
-                if (payload := self._transport.receive(_READ_POLL)) is not None:
-                    with self._state:
-                        self._route(payload)
+            while True:
+                payload = self._transport.receive()
+                with self._state:
+                    self._route(payload)
         except Exception as err:  # Disconnected, or a bug that mustn't leave a request waiting.
             self._disconnected(err)
 

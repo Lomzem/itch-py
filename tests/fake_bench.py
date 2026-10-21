@@ -189,6 +189,9 @@ class _FakeSerial:
             del self._out[:size]
         return data
 
+    def cancel_read(self) -> None:
+        """Does nothing: a read returns within the read timeout anyway."""
+
     def close(self) -> None:
         if self.is_open:
             self._events.append(("close", None))

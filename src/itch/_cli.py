@@ -11,7 +11,7 @@ from ipaddress import IPv4Address, IPv4Interface
 from itch._discovery import rig_table
 from itch._errors import ItchError
 from itch._mdns import BROWSE_TIMEOUT
-from itch._rig import Rig, list_rigs
+from itch._rig import Rig, left_locked, list_rigs
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -45,6 +45,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.passphrase = _passphrase(args.ssid, args.passphrase_stdin)
         with Rig.connect(args.rig) as rig:  # Locks the Rig until the command ends.
             print(_change(rig, args))
+        if left_locked(rig):
+            print(
+                f"itch: the connection dropped before the Lock was released, so Rig {rig.label} "
+                f"stays Locked by {rig.holder} until that Holder reconnects.",
+                file=sys.stderr,
+            )
     except (ItchError, ValueError) as err:
         print(f"itch: {err}", file=sys.stderr)
         return 1
