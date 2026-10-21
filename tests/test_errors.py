@@ -44,7 +44,7 @@ def test_an_error_reply_raises_its_exception(code: ErrorCode) -> None:
         Rig.connect(peer.url) as rig,
         pytest.raises(error) as raised,
     ):
-        rig.get_all()
+        rig.get_channels()
     message = str(raised.value)
     assert phrase in message, message
     assert "error code" not in message, message
@@ -56,7 +56,7 @@ def test_a_locked_refusal_names_the_rig_and_the_holder_from_its_detail() -> None
         Rig.connect(peer.url) as rig,
         pytest.raises(LockedError) as raised,
     ):
-        rig.set(1)
+        rig.set_channel(1, "on")
     assert str(raised.value) == (
         "Rig bench3 is Locked by alice@ws3; pass take_over=True to take it over."
     )
@@ -68,7 +68,7 @@ def test_an_unknown_error_code_raises_a_generic_itch_error() -> None:
         Rig.connect(peer.url) as rig,
         pytest.raises(ItchError) as raised,
     ):
-        rig.get_all()
+        rig.get_channels()
     assert type(raised.value) is ItchError
     assert str(raised.value) == "Rig bench3 refused GetChannels with error code 99: new trouble"
 
@@ -86,8 +86,8 @@ def test_every_exported_error_is_an_itch_error() -> None:
 def test_a_rig_whose_expander_is_dead_raises_hardware_fault_error() -> None:
     with RunningSim("--hardware-fault") as sim, Rig.connect(sim.url) as rig:
         with pytest.raises(HardwareFaultError, match="not the DUT"):
-            rig.set(1)
+            rig.set_channel(1, "on")
         with pytest.raises(HardwareFaultError):
-            rig.clear_all()
-        assert rig.get_all() == 0x0000
+            rig.clear()
+        assert set(rig.get_channels().values()) == {"off"}
         assert rig.status().expander_faults == 1

@@ -79,7 +79,7 @@ def test_a_label_matches_ignoring_case_and_frees_the_others(bench: FakeBench) ->
 def test_a_label_lookup_sets_the_log_level_only_on_the_rig_it_picks(bench: FakeBench) -> None:
     other = bench.rig("/dev/ttyACM0", HW_A, "bench3")
     picked = bench.rig("/dev/ttyACM1", HW_B, "bench4")
-    Rig.connect("bench4", log_level=logging.INFO).disconnect()
+    Rig.connect("bench4", log_level=logging.INFO).close()
     assert SetLogLevel(3) in [request.body for request in picked.requests]
     assert SetLogLevel(3) not in [request.body for request in other.requests]
 
@@ -87,7 +87,7 @@ def test_a_label_lookup_sets_the_log_level_only_on_the_rig_it_picks(bench: FakeB
 def test_a_label_lookup_locks_only_the_rig_it_picks(bench: FakeBench) -> None:
     other = bench.rig("/dev/ttyACM0", HW_A, "bench3")
     picked = bench.rig("/dev/ttyACM1", HW_B, "bench4")
-    Rig.connect("bench4", holder="qa@bench-pc").disconnect()
+    Rig.connect("bench4", holder="qa@bench-pc").close()
     assert Lock("qa@bench-pc", takeover=False) in [request.body for request in picked.requests]
     assert [type(request.body) for request in other.requests] == [Hello, SetLogLevel]
 

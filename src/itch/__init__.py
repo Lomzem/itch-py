@@ -16,14 +16,13 @@ from itch._errors import (
     StorageFaultError,
 )
 from itch._profile import Encoding, Profile, alias, field
-from itch._rig import ChannelState, Rig, RigLock, ch, list_rigs
+from itch._rig import Rig, RigLock, list_rigs
 from itch._status import AddressMode, Link, Status
 
 __all__ = [
     "AddressMode",
     "AmbiguousRigError",
     "BatchConflictError",
-    "ChannelState",
     "DevelopmentBuildWarning",
     "DisconnectedError",
     "Encoding",
@@ -42,7 +41,6 @@ __all__ = [
     "Status",
     "StorageFaultError",
     "alias",
-    "ch",
     "field",
     "list_rigs",
 ]

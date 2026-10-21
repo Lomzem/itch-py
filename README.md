@@ -18,24 +18,14 @@ itch @ git+https://github.com/Lomzem/itch-py.git@vX.Y.Z
 
 ## Connect to a Rig
 
-Plug the Rig into the PC over USB. With one Rig plugged in, connect without naming it, and disconnect when done:
+Plug the Rig into the PC over USB. With one Rig plugged in, connect without naming it:
 
 ```python
 from itch import Rig
 
-rig = Rig.connect()
-print(rig.label, rig.hardware_id, rig.firmware_version)
-rig.disconnect()
-```
-
-Or do the same in a `with` block, which disconnects when the block ends, even if the code inside it raises:
-
-```python
 with Rig.connect() as rig:
     print(rig.label, rig.hardware_id, rig.firmware_version)
 ```
-
-Both styles do the same thing; use whichever suits the script. See [Disconnect](#disconnect) for what disconnecting does.
 
 With several, name the one you want by its label, Hardware ID or port, ignoring case:
 
@@ -81,7 +71,7 @@ If mDNS is blocked or slow on your network, connect by address instead. This ski
 Rig.connect("tcp://192.0.2.10:7878")
 ```
 
-A Rig serves at most 4 network connections besides USB, and closes a fifth before answering. itch-py reports that straight away as "Rig at tcp://… closed the connection before replying to Hello; it may already have 4 network connections." Disconnect a script you no longer need, or use USB.
+A Rig serves at most 4 network connections besides USB, and closes a fifth before answering. itch-py reports that straight away as "Rig at tcp://… closed the connection before replying to Hello; it may already have 4 network connections." Close a script you no longer need, or use USB.
 
 On Linux, your user needs access to the port: add yourself to the group that owns `/dev/ttyACM*` (`dialout` on Debian and Ubuntu, `uucp` on Arch), then log in again.
 
@@ -98,84 +88,29 @@ itch-sim listening on tcp://127.0.0.1:49152
 Then connect to that address:
 
 ```python
-rig = Rig.connect("tcp://127.0.0.1:<port>")
+with Rig.connect("tcp://127.0.0.1:<port>") as rig:
+    ...
 ```
-
-### Disconnect
-
-Connecting Locks the Rig (see [Sharing a Rig](#sharing-a-rig)). Any of these releases the Lock and frees the port for the next script:
-
-- `rig.disconnect()`;
-- leaving a `with Rig.connect(...)` block, including on an exception;
-- the script ending without either, normally or on an uncaught exception.
-
-Disconnecting never changes the Channels: the Rig keeps them, so the next script, or a reconnect, finds them as this one left them. Calling `disconnect()` again does nothing, and any read or change on that `rig` then raises `DisconnectedError`.
-
-Connecting again to a Rig the script already has open, on the same USB port or `tcp://` address, just works, as when you re-run a notebook cell that connects. itch-py first disconnects the older connection, releasing its Lock. Using the older variable then raises `DisconnectedError` saying the script connected to the same Rig again, so use the newer one.
 
 ## Set and read Channels
 
-Channels are numbered 1 to 16, as on the board. On means the contact is closed, like a DIP switch's ON position.
+Channels are numbered 1 to 16, as on the board. `"on"` means the contact is closed, like a DIP switch's ON position.
 
 ```python
-rig.set(1, 5)  # turn CH1 and CH5 on
-rig.clear(3)  # turn CH3 off
-rig.write(set=[1, 5], clear=[3])  # turn some on and others off, in one write
-rig.set_all()  # turn every Channel on
-rig.clear_all()  # turn every Channel off
+rig.set_channel(3, "on")
+rig.set_channels({1: "on", 5: "off"})  # one write; other Channels stay as they are
+rig.clear()  # every Channel off
+
+print(rig.get_channel(3))  # "off"
+print(rig.get_channels())  # {1: "off", 2: "off", ..., 16: "off"}
+print(rig.get_channels([1, 5]))  # {1: "off", 5: "off"}
 ```
 
-`set`, `clear` and `write` leave every Channel you don't name as it is. `set()` and `clear()` with no Channels raise `ValueError`, so an empty computed list, as in `rig.clear(*failed)`, can never turn every Channel off: that is always `clear_all()`. `write()` raises too if it is given no Channels, or the same Channel in `set` and `clear`.
-
-Read one Channel as `True` or `False`, or all 16 in one read:
-
-```python
-rig.clear_all()
-rig.set(1, 5)
-rig.get(5)  # True
-rig.get(3)  # False
-print(rig.get_all())  # ChannelState(0x0011, on=[1, 5])
-```
-
-`get_all()` shows the state in hex with the Channels that are on. CH1 is the rightmost bit of that hex, so build states from Channel numbers with `ch(...)` (see [Whole Channel states](#whole-channel-states)).
-
-Every read asks the Rig, so it shows what the Rig commands now, and every change is sent, even one that repeats the last.
-
-### Whole Channel states
-
-A Channel state is all 16 Channels as one 16-bit number, as in a failure log or on a bench sheet. `apply` writes one, and `ch()` builds one from Channel numbers:
-
-```python
-from itch import ch
-
-rig.apply(ch(1, 5))  # CH1 and CH5 on, every other Channel off
-rig.apply(0x6742)  # CH2, CH7, CH9, CH10, CH11, CH14 and CH15 on, the rest off
-rig.apply(0x6742, mask=0xFF00)  # write CH9 to CH16 only; CH1 to CH8 stay as they are
-rig.apply(ch(9, 10), mask=ch(9, 10, 11, 12))  # CH9 and CH10 on, CH11 and CH12 off
-```
-
-The bits of the state outside `mask` are ignored. Binary, such as `0b0110_0111_0100_0010`, works as hex does.
-
-> [!WARNING]
-> CH1 is the rightmost bit of a Channel state, and CH16 the leftmost: `0x0001` is CH1 alone and `0x8000` is CH16 alone. Copying switch positions down left to right, CH1 first, gives a backwards number: CH1 and CH2 on is `0x0003`, not `0xC000`. Build states and masks with `ch(...)` rather than by hand: `ch(1, 2) == 0x0003`. Printing a state lists the Channels that are on next to the hex, so a backwards one shows straight away.
-
-The state `get_all()` returns is an `int`, so it compares, masks and applies like one. It also answers which Channels are on without asking the Rig again:
-
-```python
-rig.apply(0x6742)
-state = rig.get_all()  # ChannelState(0x6742, on=[2, 7, 9, 10, 11, 14, 15])
-state == 0x6742  # True
-state & ch(1, 2, 3, 4)  # 2: of CH1 to CH4, only CH2 is on
-state.get(7)  # True
-state.on  # frozenset({2, 7, 9, 10, 11, 14, 15})
-rig.apply(state)  # put every Channel back as it was read
-```
-
-A state or mask that isn't an `int` from `0x0000` to `0xFFFF`, a `mask` of 0, or a Channel outside 1 to 16 raises `ValueError` before anything is sent.
+The Rig keeps its Channels when the script ends or disconnects: closing never turns them off. The next script, or a reconnect, finds them as they were left.
 
 ## Sharing a Rig
 
-Connecting Locks the Rig, so nobody else's script can change it until yours disconnects. Anyone may still read it. The Lock is held under your script's Holder: `user@host` by default, such as `qa@bench-pc`. Pass `holder="..."` to name it yourself, up to 64 bytes:
+Connecting Locks the Rig, so nobody else's script can change it until yours closes. Anyone may still read it. The Lock is held under your script's Holder: `user@host` by default, such as `qa@bench-pc`. Pass `holder="..."` to name it yourself, up to 64 bytes:
 
 ```python
 Rig.connect("bench3", holder="qa@bench-pc")
@@ -192,20 +127,19 @@ itch.LockedError: Rig bench3 is Locked by alice@ws3; pass take_over=True to take
 To look without Locking, pass `lock=False`. Reads work; changes raise `LockedError` while someone else holds the Lock. To Lock only part of a script, use `rig.lock()`:
 
 ```python
-rig = Rig.connect("bench3", lock=False)
-print(rig.get_all())
-with rig.lock():  # Locked here, released when the block ends
-    rig.set(3)
-rig.disconnect()
+with Rig.connect("bench3", lock=False) as rig:
+    print(rig.get_channels())
+    with rig.lock():  # Locked here, released when the block ends
+        rig.set_channel(3, "on")
 ```
 
-Locks nest: the Rig stays Locked until every `rig.lock()` is released, and the Lock taken on connect lasts until the script disconnects. So `with rig.lock():` inside a script that Locked on connect leaves the Rig Locked after the block. Calling `.release()` on a Lock twice releases it once.
+Locks nest: the Rig stays Locked until every `rig.lock()` is released, and the Lock taken on connect lasts until `close()`. So `with rig.lock():` inside a script that Locked on connect leaves the Rig Locked after the block. Calling `.release()` on a Lock twice releases it once.
 
-To take the Lock from whoever holds it, after checking with them, pass `take_over=True` to `Rig.connect()` or `rig.lock()`. That's a Takeover. Their script's next change raises `LockedError` naming you, and their `disconnect()` logs a warning instead of releasing your Lock. itch-py never takes over unless you ask.
+To take the Lock from whoever holds it, after checking with them, pass `take_over=True` to `Rig.connect()` or `rig.lock()`. That's a Takeover. Their script's next change raises `LockedError` naming you, and their `close()` logs a warning instead of releasing your Lock. itch-py never takes over unless you ask.
 
-Disconnecting, leaving the `with` block, or the script ending, normally or on an uncaught exception, releases the Lock and leaves the Channels as they are (see [Disconnect](#disconnect)). A script that is killed, or that loses its connection, leaves the Rig Locked. Running it again under the same Holder picks the Lock back up, with the Channels as it left them.
+Closing releases the Lock and leaves the Channels as they are. A script that crashes or loses its connection leaves the Rig Locked. Running it again under the same Holder picks the Lock back up, with the Channels as it left them.
 
-Two scripts run by the same user on the same computer share a Holder, so they share the Lock: either can change the Rig, and disconnecting either releases the Lock for both. Give each its own `holder=` if they must not share.
+Two scripts run by the same user on the same computer share a Holder, so they share the Lock: either can change the Rig, and closing either releases the Lock for both. Give each its own `holder=` if they must not share.
 
 ## Rename a Rig
 
@@ -242,7 +176,7 @@ rig.set_address(IPv4Interface("192.0.2.10/24"), gateway=IPv4Address("192.0.2.1")
 rig.use_dhcp()  # back to DHCP
 ```
 
-The Rig applies exactly what it is told, with no conflict check and no fallback to DHCP. A wrong static address strands the Rig's Wi-Fi until you fix it over USB. itch-py refuses a zero, broadcast or multicast address, a broadcast or multicast gateway, and a /0 prefix, but can't tell whether the address suits your network. A zero gateway means none, as leaving it out does.
+The Rig applies exactly what it is told, with no conflict check and no fallback to DHCP. A wrong static address strands the Rig's Wi-Fi until you fix it over USB. itch-py refuses a zero, broadcast or multicast address or gateway, and a /0 prefix, but can't tell whether the address suits your network.
 
 Or from the command line, which Locks the Rig for each command:
 
@@ -256,7 +190,7 @@ itch address dhcp bench3
 
 These changes need the Lock like any other, so they raise `LockedError` while someone else holds it, and `StorageFaultError` if the Rig couldn't save them, keeping the old setting.
 
-Changing Wi-Fi or the address over the network can cut you off: the Rig leaves and rejoins Wi-Fi after `set_wifi()` or `clear_wifi()`, and moves to its new address about a second after `set_address()` or `use_dhcp()`. The call still succeeds, `disconnect()` stays quiet, and the next call on that connection raises `DisconnectedError` saying to reconnect after the network change. Over USB nothing drops, so provisioning over USB is simplest.
+Changing Wi-Fi or the address over the network can cut you off: the Rig leaves and rejoins Wi-Fi after `set_wifi()` or `clear_wifi()`, and moves to its new address about a second after `set_address()` or `use_dhcp()`. The call still succeeds, `close()` stays quiet, and the next call on that connection raises `DisconnectedError` saying to reconnect after the network change. Over USB nothing drops, so provisioning over USB is simplest.
 
 ## Drive a DUT with a Profile
 
@@ -287,43 +221,23 @@ class AcmeWidget(Profile):
     )
 ```
 
-Then connect with the Profile. `Rig.connect` returns an `AcmeWidget`, the DUT, which drives both its Fields and the Rig's Channels. In VS Code, the Values autocomplete inside `set("…")`, and a misspelt one is underlined once type checking is on (`"python.analysis.typeCheckingMode": "basic"`):
+Then drive the DUT through it. In VS Code, the Values autocomplete inside `set("…")`, and a misspelt one is underlined once type checking is on (`"python.analysis.typeCheckingMode": "basic"`):
 
 ```python
-dut = Rig.connect("bench3", AcmeWidget)  # Rig.connect(profile=AcmeWidget) with one Rig plugged in
+dut = AcmeWidget(rig)
 dut.resolution.set("1080p")
 dut.mode.set("night", encoding=2)
-print(dut.mode.get())  # "night"; an alias reads back as the Value it names
-print(dut.mode.get_encoding().number)  # 2
-print(dut)  # AcmeWidget(resolution="1080p", mode="night" (Encoding 2))
-dut.disconnect()
-```
-
-Or in a `with` block, which disconnects when it ends:
-
-```python
-with Rig.connect("bench3", AcmeWidget) as dut:
-    dut.resolution.set("1080p")
-```
-
-Disconnecting a DUT disconnects its Rig and releases the Lock, as in [Disconnect](#disconnect).
-
-To set several Fields in one write, pass them to `dut.apply`. Each takes a Value or alias (Encoding 1), a `(Value, number)` tuple to pick an Encoding, or an Encoding itself:
-
-```python
-dut.apply(resolution="720p", mode="movie")
-dut.apply(mode=("night", 2))  # Encoding 2 of "night"
 for encoding in dut.mode.all_encodings():  # every Encoding of every Value
-    dut.apply(mode=encoding)
-    print(f"dut.apply(mode={(encoding.value, encoding.number)!r})")  # to paste into a report
+    encoding.set()
     ...  # check the DUT
+
+print(dut.mode.get())  # "night"; an alias reads back as the Value it names
+print(dut.mode.get_encoding())  # mode="night" Encoding 2 of 2 ["on", "off", "on"]
 ```
 
-`dut.apply` checks every Field before writing, and changes only the Channels of the Fields it names. An unknown Field, Value or Encoding raises `ValueError` saying what the Field accepts, and two Fields that need a shared Channel in different positions raise `BatchConflictError`. Either way, no Channels change.
+A mistake in a Profile, such as a wrong number of positions, raises a `ProfileError` saying what to fix as soon as the Profile is loaded.
 
-The DUT has the same Channel verbs as a Rig, so one variable does everything: `dut.set(1, 5)`, `dut.clear(3)`, `dut.write(set=[1, 5], clear=[3])`, `dut.apply(ch(1, 5))`, `dut.set_all()`, `dut.clear_all()`, `dut.get(3)` and `dut.get_all()`. As on a Rig, CH1 is the rightmost bit of a state such as `dut.apply(0x0011)`, so build states with `ch(...)` (see [Whole Channel states](#whole-channel-states)). `dut.apply` takes either a state or Fields, and raises `TypeError` given both. The rest of what a Rig does stays on `dut.rig`, such as `dut.rig.status()` and `dut.rig.set_label("bench3")`.
-
-A mistake in a Profile, such as a wrong number of positions, or a Field named after one of the DUT's own methods, raises a `ProfileError` saying what to fix as soon as the Profile is loaded.
+To change several Fields at once, set them inside `with dut.batch():`; they are written together when the block ends. `print(dut)` shows every Field's current Value.
 
 To write a Profile for your own DUT, start with [Writing a Profile](docs/writing-profiles.md) and the [Profile template](docs/profile_template.py).
 
@@ -345,25 +259,9 @@ Each itch-py release is tested against one `itch` release: its `itch-sim` and it
 
 | itch-py | Tested with `itch` (sim and firmware) |
 | ------- | ------------------------------------- |
-| v0.3.0 | v0.3.0 |
 | v0.2.0 | v0.3.0 |
 | v0.1.1 | v0.1.1 |
 | v0.1.0 | v0.1.0 |
-
-### Upgrading to v0.3.0
-
-v0.3.0 breaks scripts written for v0.2.0. The protocol is unchanged, so it works with the same `itch` v0.3.0 sim and firmware. Each old call now raises an error naming its replacement:
-
-| v0.2.0 | v0.3.0 |
-| ------ | ------ |
-| `rig.set_channel(3, "on")` | `rig.set(3)` |
-| `rig.set_channels({1: "on", 3: "off"})` | `rig.write(set=[1], clear=[3])` |
-| `rig.get_channel(3) == "on"` | `rig.get(3)` |
-| `rig.get_channels()` | `rig.get_all()` |
-| `rig.clear()` | `rig.clear_all()` |
-| `rig.close()` | `rig.disconnect()` |
-| `dut = AcmeWidget(rig)` | `dut = Rig.connect("bench3", AcmeWidget)` |
-| `with dut.batch():` and one `.set()` per Field | `dut.apply(resolution="1080p", mode="night")` |
 
 ## Development
 

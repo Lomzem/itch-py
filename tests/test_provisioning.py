@@ -13,7 +13,6 @@ from ipaddress import IPv4Address, IPv4Interface
 import pytest
 from conftest import RunningSim
 from scripted_rig import ACME_HELLO, HangUp, ScriptedRig, after_connecting
-from tcp_client import other_client
 
 from itch import (
     AddressMode,
@@ -33,7 +32,6 @@ from itch._wire import (
     Message,
     OkResponse,
     ReleaseLock,
-    ReleaseLockReply,
     Request,
     SetAddress,
     SetAddressReply,
@@ -108,14 +106,14 @@ def test_a_storage_fault_raises_and_keeps_the_old_setting(helper: Callable[[Rig]
 def test_another_holders_lock_refuses_each_helper(
     own_sim: RunningSim, helper: Callable[[Rig], None]
 ) -> None:
-    with other_client(own_sim.url) as alice:
-        alice.request(Lock("alice", takeover=False), LockReply)
-        with Rig.connect(own_sim.url, holder="bob", lock=False) as bob:
-            before = settings(bob.status())
-            with pytest.raises(LockedError, match="Locked by alice"):
-                helper(bob)
-            assert settings(bob.status()) == before
-        alice.request(ReleaseLock("alice"), ReleaseLockReply)
+    with (
+        Rig.connect(own_sim.url, holder="alice"),
+        Rig.connect(own_sim.url, holder="bob", lock=False) as bob,
+    ):
+        before = settings(bob.status())
+        with pytest.raises(LockedError, match="Locked by alice"):
+            helper(bob)
+        assert settings(bob.status()) == before
 
 
 INVALID: dict[str, tuple[Callable[[Rig], None], str]] = {
@@ -188,9 +186,9 @@ def test_a_drop_after_a_network_change_succeeds_then_says_to_reconnect(
         helper(rig)
         assert peer.closed.wait(2)
         with pytest.raises(DisconnectedError, match="reconnect after the network change"):
-            rig.get_all()
+            rig.get_channels()
         with caplog.at_level(logging.DEBUG, logger="itch"):
-            rig.disconnect()
+            rig.close()
     assert caplog.records == []
 
 
@@ -202,9 +200,9 @@ def test_a_rig_silent_after_a_network_change_has_disconnected(
         rig = Rig.connect(peer.url)
         rig.set_address(IPv4Interface("192.0.2.10/24"))
         with pytest.raises(DisconnectedError, match="reconnect after the network change"):
-            rig.get_all()
+            rig.get_channels()
         with caplog.at_level(logging.DEBUG, logger="itch"):
-            rig.disconnect()
+            rig.close()
     assert caplog.records == []
 
 
@@ -233,7 +231,7 @@ def test_closing_a_rig_silent_after_a_network_change_tries_to_release_once_quiet
         rig = Rig.connect(peer.url, holder="alice")
         rig.set_address(IPv4Interface("192.0.2.10/24"))
         with caplog.at_level(logging.DEBUG, logger="itch"):
-            rig.disconnect()
+            rig.close()
         assert peer.closed.wait(2)
     assert caplog.records == []
     assert [r.body for r in peer.requests if isinstance(r.body, ReleaseLock)] == [
@@ -337,8 +335,6 @@ def test_itch_address_static_help_says_to_fix_a_wrong_address_over_usb(
 def test_a_provisioning_command_fails_while_another_holder_has_the_lock(
     own_sim: RunningSim, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with other_client(own_sim.url) as alice:
-        alice.request(Lock("alice", takeover=False), LockReply)
+    with Rig.connect(own_sim.url, holder="alice"):
         assert main(["address", "dhcp", own_sim.url]) == 1
-        alice.request(ReleaseLock("alice"), ReleaseLockReply)
     assert "Locked by alice" in capsys.readouterr().err

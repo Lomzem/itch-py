@@ -15,8 +15,6 @@ from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
-    Clear,
-    ClearReply,
     Hello,
     HelloReply,
     Lock,
@@ -127,16 +125,11 @@ def after_connecting(answer: Callable[[Request], Iterable[Message]]) -> Scripted
 
 
 def granting_writes() -> ScriptedRig:
-    """A peer that accepts every Mask write and Clear, so tests can inspect the wire.
+    """A peer that takes every Channel write, so a test can count them.
 
     The sim can't show how many writes reached it.
     """
-
-    def answer(request: Request) -> list[Message]:
-        reply = ClearReply(0) if isinstance(request.body, Clear) else WriteChannelsReply(0)
-        return [OkResponse(request.request_id, reply)]
-
-    return after_connecting(answer)
+    return after_connecting(lambda request: [OkResponse(request.request_id, WriteChannelsReply(0))])
 
 
 def channel_writes(peer: ScriptedRig) -> list[tuple[int, int]]:

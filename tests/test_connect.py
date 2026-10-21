@@ -69,7 +69,7 @@ def test_warns_about_a_development_build() -> None:
         answering(dataclasses.replace(ACME_HELLO, dirty=True)) as peer,
         pytest.warns(DevelopmentBuildWarning, match="bench3"),
     ):
-        Rig.connect(peer.url).disconnect()
+        Rig.connect(peer.url).close()
 
 
 def test_closes_when_the_warning_is_raised_as_an_error() -> None:
@@ -85,4 +85,12 @@ def test_closes_at_the_end_of_a_with_block() -> None:
     with answering(ACME_HELLO) as peer:
         with Rig.connect(peer.url):
             assert not peer.closed.is_set()
+        assert peer.closed.wait(2)
+
+
+def test_close_is_safe_to_call_twice() -> None:
+    with answering(ACME_HELLO) as peer:
+        rig = Rig.connect(peer.url)
+        rig.close()
+        rig.close()
         assert peer.closed.wait(2)

@@ -43,7 +43,7 @@ Each setting of the DUT is a **Field**. This block is one Field:
 
 Fill in three things:
 
-- **The Field's name**, before the `=`: here `resolution`. Scripts use it as `dut.resolution`. Use lowercase letters, digits and `_`, starting with a letter: `resolution`, `audio_out`, `sw2_mode`. No spaces or dashes, and none of the [names a DUT keeps for itself](#names-a-field-cant-have).
+- **The Field's name**, before the `=`: here `resolution`. Scripts use it as `dut.resolution`. Use lowercase letters, digits and `_`, starting with a letter: `resolution`, `audio_out`, `sw2_mode`. No spaces or dashes.
 - **`channels`**: the Rig Channels the setting uses, in square brackets, separated by commas.
 - **`values`**: one line per choice, called a **Value**. The name goes in quotes, then a colon, then one `"on"` or `"off"` per Channel, **in the same order as `channels`**. Above, `"1080p": ["off", "on"]` means CH1 off and CH2 on. A Value's name can be anything in quotes, spaces included.
 
@@ -54,16 +54,6 @@ Keep the indentation, the commas at the end of each line, and the brackets as th
 `"on"` is the DIP switch's **ON** position: on most switches that is pushed to the right, or towards the side marked `1` or `ON`. `"off"` is the other side. If the DUT's table writes `1`/`0`, then `1` is `"on"`.
 
 The Rig doesn't care which way the switch is drawn in the manual. If the DUT behaves the opposite of what you expect, check the switch table's ON side before changing the Profile.
-
-### Names a Field can't have
-
-A DUT has a few methods of its own, alongside its Fields: `set`, `clear`, `write`, `apply`, `set_all`, `clear_all`, `get`, `get_all`, `disconnect` and `rig`. A Field can't take one of those names, or a name starting with `_`. Such a Field raises a `ProfileError` as soon as the Profile loads:
-
-```
-itch._errors.ProfileError: AcmeWidget.set: Field `set` clashes with a DUT method; give it another name.
-```
-
-Rename the Field, for example to `setting` or `sw1_set`. The list never grows: new Rig features go on `dut.rig`, never on the DUT itself, so a Profile that loads today keeps loading after an itch-py upgrade. Names such as `input`, `output`, `format`, `mode`, `state`, `status` and `label` are all fine.
 
 ### A setting on one switch
 
@@ -97,39 +87,25 @@ Common ones:
 | `"720p" and "4k" are both ["on", "off"]` | Two Values have the same positions. Fix one, or make one an alias. |
 | `the Value "720p" is listed twice` | See [A Value listed twice](#a-value-listed-twice). |
 | `the Value name 720 needs quotes` | Write `"720"`, not `720`. |
-| ``Field `set` clashes with a DUT method`` | Rename the Field. See [Names a Field can't have](#names-a-field-cant-have). |
 
 ## Use it in a script
-
-Connect with the Profile, drive the DUT, and disconnect when done:
 
 ```python
 from itch import Rig
 
 from acme_widget import AcmeWidget
 
-dut = Rig.connect("tcp://127.0.0.1:<port>", AcmeWidget)  # see the README to connect
-dut.resolution.set("1080p")
-dut.mode.set("night")
-print(dut)  # AcmeWidget(resolution="1080p", ..., mode="night" (Encoding 1))
-print(dut.resolution.get())  # "1080p"
-dut.disconnect()
-```
-
-Or do the same in a `with` block, which disconnects when the block ends, even if the code inside it raises:
-
-```python
-with Rig.connect("tcp://127.0.0.1:<port>", AcmeWidget) as dut:
+with Rig.connect("tcp://127.0.0.1:<port>") as rig:  # see the README to connect
+    dut = AcmeWidget(rig)
     dut.resolution.set("1080p")
+    dut.mode.set("night")
+    print(dut)  # AcmeWidget(resolution="1080p", ..., mode="night" (Encoding 1))
+    print(dut.resolution.get())  # "1080p"
 ```
-
-Both styles work the same. Disconnecting releases the Rig's Lock, so a colleague's script can use it, and leaves the Channels as they are. A script that ends without disconnecting, normally or on an uncaught exception, releases the Lock as it exits.
 
 - `dut.<field>.set("<value>")` changes a setting. In VS Code, type `set("` and the Values appear in a list; a misspelt one is underlined in red.
 - `dut.<field>.get()` reads the setting back.
 - `print(dut)` shows every Field's current Value on one line, handy for a test log. A Field whose Channels match none of its Values shows its positions and `(no Value)`.
-
-The DUT also drives Channels by number, with the same calls as a Rig: `dut.set(1, 5)`, `dut.clear(3)`, `dut.get(3)`, `dut.get_all()` and the rest (see the README's [Set and read Channels](../README.md#set-and-read-channels)). The Rig itself is `dut.rig`, for everything else a Rig does, such as `dut.rig.status()`.
 
 ## A Value the DUT accepts in several ways
 
@@ -152,20 +128,17 @@ Some DUTs accept the same choice through several switch patterns, for example wh
 `dut.mode.set("night")` uses the first Encoding. To test each one, so a broken one can't hide behind a working one:
 
 ```python
-for encoding in dut.mode.encodings("night"):  # every Encoding of "night"
-    dut.apply(mode=encoding)
-    print(f"dut.apply(mode={(encoding.value, encoding.number)!r})")  # dut.apply(mode=('night', 2))
-    ...  # check the DUT here
+    for encoding in dut.mode.encodings("night"):  # every Encoding of "night"
+        encoding.set()
+        print("testing", encoding)  # mode="night" Encoding 2 of 3 ["on", "off", "on"]
+        ...  # check the DUT here
 
-for encoding in dut.mode.all_encodings():  # every Encoding of every Value
-    dut.apply(mode=encoding)
-    ...
+    for encoding in dut.mode.all_encodings():  # every Encoding of every Value
+        encoding.set()
+        ...
 
-dut.apply(mode=("night", 3))  # re-run one Encoding from a failure report
-dut.mode.set("night", encoding=3)  # the same, for one Field
+    dut.mode.set("night", encoding=3)  # re-run one Encoding from a failure report
 ```
-
-The printed line can be pasted straight into a script to re-run that Encoding.
 
 ## Another name for a Value
 
@@ -195,22 +168,27 @@ Setting one changes the other: after `dut.picture.set("bars")`, `dut.tone.get()`
 
 ## Change several settings together
 
-To change several Fields at the same moment, pass them all to `dut.apply`:
+To change several Fields at the same moment, put the `set()` calls in a batch:
 
 ```python
-dut.apply(resolution="4k", refresh="50hz", mode="night")  # mode agrees with refresh on CH4
+    with dut.batch():  # nothing changes until the block ends
+        dut.resolution.set("4k")
+        dut.refresh.set("50hz")
+        dut.mode.set("night")  # agrees with refresh on CH4, so this is fine
 ```
 
-All their Channels change in one write, and Channels of Fields you don't name stay as they are. Each Field takes a Value or alias (Encoding 1), a `(Value, number)` tuple such as `mode=("night", 2)`, or an Encoding from `encodings()` or `all_encodings()`.
+When the block ends, all the Channels change in one go. Setting the same Field twice in a batch keeps the last Value.
 
-`dut.apply` checks every Field before writing anything, so one typo doesn't leave the DUT half-changed. An unknown Field, Value or Encoding raises `ValueError` saying what it accepts. If two Fields need a shared Channel in different positions, the write is refused and **no Channels change**:
+If two Fields need a shared Channel in different positions, the batch is refused and **no Channels change**:
 
 ```python
-dut.apply(refresh="60hz", mode="night")  # refresh needs CH4 off, night needs it on
+        with dut.batch():
+            dut.refresh.set("60hz")  # CH4 off
+            dut.mode.set("night")  # CH4 on
 ```
 
 ```
-itch._errors.BatchConflictError: CH4: refresh="60hz" needs off, but mode="night" needs on. Set only one of them, or pick Values that agree. No Channels were changed.
+itch._errors.BatchConflictError: CH4: refresh="60hz" needs off, but mode="night" needs on. Set only one of them in a batch, or pick Values that agree. No Channels were changed.
 ```
 
 ## Pitfalls
@@ -237,7 +215,7 @@ Write the `values={...}` dict directly inside `field(...)`, as in the template. 
 
 ### Setting a Value with `=`
 
-Use `dut.mode.set("cinema")`, or `dut.apply(mode="cinema")`. `dut.mode = "cinema"` raises an error that points you to `set()`.
+Use `dut.mode.set("cinema")`. `dut.mode = "cinema"` raises an error that points you to `set()`.
 
 ## Where to keep Profiles
 

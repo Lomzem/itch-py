@@ -48,30 +48,11 @@ class DisconnectedError(ItchError):
     reboot turns every Channel off, so check them, or run the script again.
 
     After the Rig accepts new Wi-Fi or address settings over the network, the connection is
-    expected to end, and the message says to reconnect after the network change. After
-    `disconnect()`, the message says this script disconnected, and after the script connected
-    to the same Rig again, which disconnects the older connection, it says to use the newer.
+    expected to end, and the message says to reconnect after the network change.
     """
 
-    def __init__(
-        self,
-        rig: str,
-        *,
-        network_changed: bool = False,
-        closed: bool = False,
-        replaced: bool = False,
-    ) -> None:
-        if replaced:
-            message = (
-                f"Rig {rig} was disconnected because this script connected to the same Rig "
-                "again; use the newer connection."
-            )
-        elif closed:
-            message = (
-                f"Rig {rig} was disconnected by this script; connect again with Rig.connect() "
-                "to use it."
-            )
-        elif network_changed:
+    def __init__(self, rig: str, *, network_changed: bool = False) -> None:
+        if network_changed:
             message = (
                 f"Rig {rig} disconnected after its network settings changed, as expected; "
                 "reconnect after the network change."
@@ -109,7 +90,7 @@ class ProfileError(ItchError):
 
 
 class BatchConflictError(ItchError):
-    """Fields in one `dut.apply()` disagree on a shared Channel."""
+    """Fields in one batch disagree on a shared Channel."""
 
 
 def rig_error(rig: str, request: str, code: int, detail: str) -> ItchError:

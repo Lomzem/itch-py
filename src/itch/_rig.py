@@ -8,18 +8,14 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping
 from ipaddress import IPv4Address, IPv4Interface
 from types import TracebackType
-from typing import TYPE_CHECKING, Literal, NoReturn, Self, TypeVar, overload
+from typing import Literal, Self
 
 from itch import _mdns, _wire
 from itch._connection import Connection
 from itch._discovery import RigInfo, find_rig, rig_infos
-from itch._endpoints import claim, forget
 from itch._errors import DevelopmentBuildWarning, DisconnectedError, ItchError, LockedError
 from itch._status import Status, from_reply
 from itch._transport import open_tcp
-
-if TYPE_CHECKING:
-    from itch._profile import Profile
 
 CHANNELS = range(1, 17)
 """The Channel numbers, CH1 to CH16 as on the board."""
@@ -27,38 +23,18 @@ CHANNELS = range(1, 17)
 Position = Literal["on", "off"]
 """A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
 
-ALL_CHANNELS = 0xFFFF
-"""The mask of all 16 Channels."""
-
-P = TypeVar("P", bound="Profile")
-
 _LOGGER = logging.getLogger("itch")
 
 _NOT_UNICAST = "it must not be zero, 255.255.255.255 or multicast."
 
-REMOVED = {
-    "set_channel": "Use set(...) to turn Channels on, clear(...) to turn them off, or "
-    "write(set=[...], clear=[...]) for both in one write.",
-    "set_channels": "Use set(...) to turn Channels on, clear(...) to turn them off, or "
-    "write(set=[...], clear=[...]) for both in one write.",
-    "get_channel": "Use get(channel), which returns True when the Channel is on.",
-    "get_channels": "Use get_all() to read all 16 Channels, or get(channel) for one.",
-    "close": "Use disconnect().",
-}
-"""Methods removed in itch-py 0.3.0, and what to use instead."""
-
 
 class Rig:
-    """A connected Rig. Get one with `Rig.connect()`, and disconnect it when done.
+    """A connected Rig. Get one with `Rig.connect()`, and close it when done.
 
     ```python
-    rig = Rig.connect("bench3")
-    rig.set(3)
-    rig.disconnect()
-
-    with Rig.connect("bench3") as rig:  # Leaving the block disconnects.
+    with Rig.connect("bench3") as rig:
         print(rig.label, rig.hardware_id, rig.firmware_version)
-        rig.set(3)
+        rig.set_channel(3, "on")
     ```
     """
 
@@ -67,66 +43,29 @@ class Rig:
         self._connection = connection
         self._holder = holder
         """Sent with every change, so a Rig Locked under this name accepts it."""
-        self._locks = _Locks(connection, holder)
-        claim(connection.endpoint, self, self._locks)  # Disconnects an older Rig there.
+        self._label = connection.hello.label
+        self._locks = 0
+        """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
+        last releases the Rig's Lock."""
+        self._locking = threading.RLock()
+        """Held while `_locks` changes and its `Lock` or `ReleaseLock` is exchanged, so a release
+        can't unlock the Rig just after another thread Locked it again. Re-entrant, for an
+        `itch` log handler that Locks from the warning `_send_release()` logs."""
+        self._left_locked = False
+        """Set if the connection dropped before `ReleaseLock` could be sent."""
 
-    @overload
-    @classmethod
-    def connect(
-        cls,
-        name: str | None = None,
-        profile: None = None,
-        *,
-        holder: str | None = None,
-        lock: bool = True,
-        take_over: bool = False,
-        log_level: int | None = None,
-        browse_timeout: float = _mdns.BROWSE_TIMEOUT,
-    ) -> Self: ...
-    @overload
-    @classmethod
-    def connect(
-        cls,
-        name: str | None,
-        profile: type[P],
-        *,
-        holder: str | None = None,
-        lock: bool = True,
-        take_over: bool = False,
-        log_level: int | None = None,
-        browse_timeout: float = _mdns.BROWSE_TIMEOUT,
-    ) -> P: ...
-    @overload
     @classmethod
     def connect(
         cls,
         name: str | None = None,
         *,
-        profile: type[P],
         holder: str | None = None,
         lock: bool = True,
         take_over: bool = False,
         log_level: int | None = None,
         browse_timeout: float = _mdns.BROWSE_TIMEOUT,
-    ) -> P: ...
-    @classmethod
-    def connect(
-        cls,
-        name: str | None = None,
-        profile: type[Profile] | None = None,
-        *,
-        holder: str | None = None,
-        lock: bool = True,
-        take_over: bool = False,
-        log_level: int | None = None,
-        browse_timeout: float = _mdns.BROWSE_TIMEOUT,
-    ) -> Self | Profile:
+    ) -> Self:
         """Connects to a Rig and checks it speaks this itch-py's protocol.
-
-        Returns the `Rig`, or with a `profile`, such as `Rig.connect("bench3", AcmeWidget)`,
-        a DUT of that Profile: one object driving the Profile's Fields and the Rig's Channels,
-        with the Rig itself as `dut.rig`. `Rig.connect(profile=AcmeWidget)` connects to the one
-        Rig plugged in. Every other option works the same with or without a Profile.
 
         `name` picks a Rig plugged in over USB by its port (`COM4`, `/dev/ttyACM0`), its
         Hardware ID (`60:55:F9:C0:27:18`) or its label (`bench3`), ignoring case. Leave it out
@@ -135,18 +74,12 @@ class Rig:
         `browse_timeout` seconds, 3 by default, and connects to the Rig advertising it.
         `tcp://host:port` reaches `itch-sim` or a Rig on the network without browsing.
 
-        Connecting to a USB port or network address this script has already connected to, as
-        when a notebook cell runs again, first disconnects the older connection, releasing its
-        Lock. Using the older `Rig`, or a DUT on it, then raises `DisconnectedError`.
-
         `holder` names this script to colleagues in every change it makes, 1 to 64 bytes of
         UTF-8. It defaults to `user@host`, cut short to 64 bytes. Two scripts run by the same
         user on the same computer share it, and so share the Lock.
 
-        Connecting Locks the Rig under `holder` until `disconnect()`, or until this script ends
-        normally or on an uncaught exception, so nobody else's script can change it, as
-        `rig.lock()` does. A killed script leaves its Lock, which `holder` picks back up on
-        connecting again. Pass `lock=False` to only look at a Rig someone else
+        Connecting Locks the Rig under `holder` until `close()`, so nobody else's script can
+        change it, as `rig.lock()` does. Pass `lock=False` to only look at a Rig someone else
         has Locked: changes then succeed only while the Rig is unlocked. Pass `take_over=True`
         to take the Lock from whoever holds it; their next change then raises `LockedError`.
 
@@ -155,8 +88,7 @@ class Rig:
         Hardware ID than its USB port lists or it advertises, if a Rig on the network refuses
         the connection, or if `holder` is left out and the user or host name can't be read.
         Raises `LockedError` if another Holder has Locked the Rig. Raises `ValueError` if
-        `holder` is empty or over 64 bytes, and `TypeError` if `profile` isn't a Profile
-        subclass, both before connecting. Warns with
+        `holder` is empty or over 64 bytes. Warns with
         `DevelopmentBuildWarning` if the Rig runs a development build.
 
         The Rig's own log messages are off unless you pass `log_level`, such as
@@ -164,10 +96,6 @@ class Rig:
         whenever itch-py hears from the Rig, and when it closes. Configure Python `logging`
         to see them.
         """
-        from itch._profile import check_profile, connected  # It imports this module.
-
-        if profile is not None:
-            check_profile(profile)
         holder = _default_holder() if holder is None else _checked_holder(holder)
         if name is not None and name.startswith("tcp://"):
             rig = cls(Connection.open(open_tcp(name), log_level=log_level), holder)
@@ -175,7 +103,7 @@ class Rig:
             rig = cls(find_rig(name, log_level, browse_timeout), holder)
         try:
             if lock:
-                rig.lock(take_over=take_over)  # A RigLock that only `disconnect()` releases.
+                rig.lock(take_over=take_over)  # A RigLock that only `close()` releases.
             if rig._connection.hello.dirty:
                 warnings.warn(
                     f"Rig {rig.label} runs a development build, built from uncommitted code. "
@@ -184,14 +112,14 @@ class Rig:
                     stacklevel=2,
                 )
         except BaseException:
-            rig.disconnect()  # Locking failed, or the warning was turned into an error.
+            rig.close()  # Locking failed, or the warning was turned into an error.
             raise
-        return rig if profile is None else connected(profile, rig)
+        return rig
 
     @property
     def label(self) -> str:
         """The Rig's Label, such as `itch-C02718`."""
-        return self._connection.name
+        return self._label
 
     @property
     def hardware_id(self) -> str:
@@ -212,8 +140,8 @@ class Rig:
         """Locks the Rig under this script's Holder now, so nobody else's script can change it.
 
         Use it as `with rig.lock(): ...` to release the Lock when the block ends, or keep it
-        and call `.release()`. `disconnect()` releases it too. Locking again under the same
-        Holder, as after a crash or a dropped connection, picks the Lock back up.
+        and call `.release()`. `close()` releases it too. Locking again under the same Holder,
+        as after a crash or a dropped connection, picks the Lock back up.
 
         Locks nest: the Rig stays Locked until every `RigLock` is released, including the
         Lock `Rig.connect()` took, so `with rig.lock():` inside a Locked script leaves it
@@ -222,82 +150,41 @@ class Rig:
         Raises `LockedError` if another Holder has Locked the Rig, unless `take_over` is true:
         that takes the Lock from them, and their next change raises `LockedError`.
         """
-        self._locks.take(take_over)
-        return RigLock(self._locks.release_one)
+        with self._locking:
+            self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
+            self._locks += 1
+        return RigLock(self._release_one)
 
-    def set(self, *channels: int) -> None:
-        """Turns `channels` on, in one write, leaving the rest as they are: `rig.set(1, 5)`.
+    def set_channel(self, ch: int, pos: Position) -> None:
+        """Turns Channel `ch` on or off."""
+        self.set_channels({ch: pos})
 
-        Raises `ValueError`, sending nothing, if no Channels are given or one isn't 1 to 16.
+    def set_channels(self, positions: Mapping[int, Position]) -> None:
+        """Turns the listed Channels on or off together, in one write, leaving the rest alone.
+
+        `positions` is `{ch: pos}`.
         """
-        if not channels:
-            raise ValueError("No Channels given: name the Channels to turn on, as in set(1, 5).")
-        bits = ch(*channels)
-        self._write_channels(bits, bits)
+        mask = values = 0
+        for channel, position in positions.items():
+            bit = _bit(channel)
+            mask |= bit
+            if _is_on(position):
+                values |= bit
+        self._write_channels(mask, values)
 
-    def clear(self, *channels: int) -> None:
-        """Turns `channels` off, in one write, leaving the rest as they are: `rig.clear(3)`.
-
-        Raises `ValueError`, sending nothing, if no Channels are given, so a computed empty
-        selection never turns every Channel off; `clear_all()` does that. Also raises it if a
-        Channel isn't 1 to 16.
-        """
-        if not channels:
-            raise ValueError("No Channels given; use clear_all() to turn every Channel off.")
-        self._write_channels(ch(*channels), 0)
-
-    def write(self, *, set: Iterable[int] = (), clear: Iterable[int] = ()) -> None:
-        """Turns the Channels in `set` on and those in `clear` off, in one write, leaving the
-        rest as they are: `rig.write(set=[1, 5], clear=[3])`.
-
-        Raises `ValueError`, sending nothing, if both are empty, a Channel is in both, or a
-        Channel isn't 1 to 16.
-        """
-        on, off = ch(*set), ch(*clear)
-        if both := on & off:
-            raise ValueError(
-                f"{_channels_named(both)} can't be in both set and clear; pick one for each."
-            )
-        if not on | off:
-            raise ValueError(
-                "No Channels given; use clear_all() for a full Clear, or name Channels to set "
-                "or clear."
-            )
-        self._write_channels(on | off, on)
-
-    def apply(self, state: int, *, mask: int = ALL_CHANNELS) -> None:
-        """Writes the 16-bit `state` to the Channels in `mask`, in one write, leaving the rest
-        as they are. Bit 0 is CH1 and bit 15 is CH16, so `ch()` builds both from Channel
-        numbers.
-
-        `rig.apply(0x6742)` writes every Channel. `rig.apply(0x6742, mask=0xFF00)` writes
-        CH9 to CH16 only, ignoring the bits of `state` outside `mask`. A `ChannelState` from
-        `get_all()` can be applied back.
-
-        Raises `ValueError`, sending nothing, if `state` or `mask` isn't an `int` from 0 to
-        0xFFFF, or `mask` is 0.
-        """
-        _checked_word(state, "state")
-        if _checked_word(mask, "mask") == 0:
-            raise ValueError("The mask 0 selects no Channels: name some, as in mask=ch(1, 5).")
-        self._write_channels(mask, state & mask)
-
-    def set_all(self) -> None:
-        """Turns every Channel on, in one write."""
-        self.apply(ALL_CHANNELS)
-
-    def clear_all(self) -> None:
-        """Turns every Channel off: the Clear."""
+    def clear(self) -> None:
+        """Turns every Channel off."""
         self._connection.request(_wire.Clear(self._holder), _wire.ClearReply)
 
-    def get(self, channel: int) -> bool:
-        """Whether the Rig commands Channel `channel` on, read from the Rig now."""
-        bit = _bit(channel)
-        return bool(self._read_channels() & bit)
+    def get_channel(self, ch: int) -> Position:
+        """Returns whether the Rig commands Channel `ch` "on" or "off"."""
+        return self.get_channels([ch])[ch]
 
-    def get_all(self) -> ChannelState:
-        """The state of all 16 Channels, read from the Rig now in one request."""
-        return ChannelState(self._read_channels())
+    def get_channels(self, chs: Iterable[int] | None = None) -> dict[int, Position]:
+        """Returns `{ch: "on" | "off"}` for the Channels in `chs`, or all 16."""
+        wanted = {ch: _bit(ch) for ch in (CHANNELS if chs is None else chs)}
+        state = self._read_channels()
+        return {ch: "on" if state & bit else "off" for ch, bit in wanted.items()}
 
     def set_label(self, label: str) -> None:
         """Renames the Rig, at most 64 bytes of UTF-8.
@@ -311,7 +198,7 @@ class Rig:
             )
         request = _wire.SetLabel(self._holder, label)
         reply = self._connection.request(request, _wire.SetLabelReply)
-        self._connection.name = reply.label
+        self._label = self._connection.name = reply.label
 
     def set_wifi(self, ssid: str, passphrase: str) -> None:
         """Gives the Rig credentials for the Wi-Fi network `ssid`, replacing any it had.
@@ -354,9 +241,8 @@ class Rig:
         fallback to DHCP: a wrong static address strands the Rig's Wi-Fi until you fix it over
         USB. The Rig keeps the setting across reboots, and its Wi-Fi credentials.
 
-        Raises `ValueError`, sending nothing, if the address is zero, 255.255.255.255 or
-        multicast, the gateway is 255.255.255.255 or multicast, or the prefix is /0. A zero
-        gateway means none, as leaving it out does.
+        Raises `ValueError`, sending nothing, if the address or a gateway is zero,
+        255.255.255.255 or multicast, or the prefix is /0.
 
         Connected over the network, the Rig moves to the new address about a second after
         replying, which may drop the connection. This still returns, and the next call raises
@@ -395,18 +281,19 @@ class Rig:
         """Returns the Rig's health since boot, who holds its Lock, and its network."""
         return from_reply(self._connection.request(_wire.GetStatus(), _wire.GetStatusReply))
 
-    def disconnect(self) -> None:
-        """Releases this script's Lock, if it holds one, and closes the connection, so another
-        script can connect. Leaving a `with Rig.connect(...)` block does it too.
+    def close(self) -> None:
+        """Releases this script's Lock, if it holds one, and closes the connection.
 
-        The Channels stay as they are: the Rig keeps them for the next script. Calling it again
-        does nothing, and any read or change then raises `DisconnectedError`. If someone took the
-        Lock over, or releasing fails, it logs a warning to the `itch` logger instead of
-        raising. A script that ends without it, normally or on an uncaught exception,
-        disconnects as it exits.
+        Safe to call twice. The Channels stay as they are: the Rig keeps them for the next
+        script. If someone took the Lock over, or releasing fails, `close()` logs a warning to
+        the `itch` logger instead of raising.
         """
-        forget(self._connection.endpoint, self)
-        self._locks.disconnect()
+        try:
+            self._release_lock()
+        except ItchError as err:
+            _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.label, err)
+        finally:
+            self._connection.close()
 
     def __enter__(self) -> Self:
         return self
@@ -417,19 +304,10 @@ class Rig:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.disconnect()
+        self.close()
 
     def __repr__(self) -> str:
         return f"<Rig {self.label} {self.hardware_id} firmware {self.firmware_version}>"
-
-    if not TYPE_CHECKING:
-        # Hidden from type checkers, so an editor still flags a removed or misspelt method.
-        def __getattr__(self, name: str) -> NoReturn:
-            raise missing(self, name, REMOVED)
-
-    def _replaced(self) -> None:
-        """Disconnects, because this process is connecting to the same Rig again."""
-        self._locks.disconnect(replaced=True)
 
     def _write_channels(self, mask: int, values: int) -> None:
         """One Mask write: the Channels in `mask` take their bits from `values`."""
@@ -445,49 +323,25 @@ class Rig:
         """The commanded state of all 16 Channels, bit 0 for CH1."""
         return self._connection.request(_wire.GetChannels(), _wire.GetChannelsReply).state
 
-
-class _Locks:
-    """The Locks a script holds on a Rig over one connection, and disconnecting it. Kept apart
-    from the `Rig`, so that a Rig the script dropped still disconnects at exit."""
-
-    def __init__(self, connection: Connection, holder: str) -> None:
-        self.connection = connection
-        self._holder = holder
-        self._live = 0
-        """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
-        last releases the Rig's Lock."""
-        self._locking = threading.RLock()
-        """Held while `_live` changes and its `Lock` or `ReleaseLock` is exchanged, so a release
-        can't unlock the Rig just after another thread Locked it again. Re-entrant, for an
-        `itch` log handler that Locks from the warning `_send_release()` logs."""
-        self.left_locked = False
-        """Set if the connection dropped before `ReleaseLock` could be sent."""
-
-    def take(self, take_over: bool) -> None:
-        """Locks the Rig, or picks the Lock up again, for one more `RigLock`."""
-        with self._locking:
-            self.connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
-            self._live += 1
-
-    def release_one(self) -> None:
+    def _release_one(self) -> None:
         """Releases one `RigLock`, and the Rig's Lock with the last."""
         with self._locking:
-            if self._live == 0:  # `disconnect()` released it already.
+            if self._locks == 0:  # `close()` released it already.
                 return
-            self._live -= 1
-            if self._live == 0:
+            self._locks -= 1
+            if self._locks == 0:
                 self._send_release()
 
-    def release_all(self) -> None:
+    def _release_lock(self) -> None:
         """Releases the Lock if any `RigLock` is live, making them all released.
 
         Not held while the connection closes, which waits for the log handlers, since one may be
         waiting to Lock.
         """
         with self._locking:
-            if self._live == 0:
+            if self._locks == 0:
                 return
-            self._live = 0
+            self._locks = 0
             self._send_release()
 
     def _send_release(self) -> None:
@@ -497,60 +351,13 @@ class _Locks:
         connection can't release it; reconnecting under the same Holder picks it back up.
         """
         try:
-            self.connection.request(_wire.ReleaseLock(self._holder), _wire.ReleaseLockReply)
+            self._connection.request(_wire.ReleaseLock(self._holder), _wire.ReleaseLockReply)
         except LockedError:
             _LOGGER.warning(
-                "Rig %s was taken over before %s released its Lock.",
-                self.connection.name,
-                self._holder,
+                "Rig %s was taken over before %s released its Lock.", self.label, self._holder
             )
         except DisconnectedError:
-            self.left_locked = True
-
-    def disconnect(self, *, replaced: bool = False) -> None:
-        """Releases the Lock if held, then closes the connection. Safe to call twice.
-
-        `replaced` says it is because this process connected to the same Rig again.
-        """
-        try:
-            self.release_all()
-        except ItchError as err:
-            _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.connection.name, err)
-        finally:
-            self.connection.close(replaced=replaced)
-
-
-class ChannelState(int):
-    """The state of all 16 Channels, as `rig.get_all()` read it: an `int`, bit 0 for CH1.
-
-    ```python
-    state = rig.get_all()
-    print(state)        # ChannelState(0x6742, on=[2, 7, 9, 10, 11, 14, 15])
-    state.get(7)        # True
-    rig.apply(state)    # puts every Channel back as it was
-    ```
-
-    It is immutable and never asks the Rig again: it keeps the state as read. Arithmetic on it
-    gives a plain `int`.
-    """
-
-    __slots__ = ()
-
-    def __new__(cls, state: int) -> Self:
-        """Raises `ValueError` unless `state` is an `int` from 0 to 0xFFFF."""
-        return super().__new__(cls, _checked_word(state, "state"))
-
-    @property
-    def on(self) -> frozenset[int]:
-        """The Channels that are on."""
-        return frozenset(_channels_in(self))
-
-    def get(self, channel: int) -> bool:
-        """Whether Channel `channel` is on in this state."""
-        return bool(self & _bit(channel))
-
-    def __repr__(self) -> str:
-        return f"ChannelState(0x{self:04X}, on={_channels_in(self)})"
+            self._left_locked = True
 
 
 class RigLock:
@@ -558,7 +365,7 @@ class RigLock:
 
     ```python
     with rig.lock():
-        rig.set(3)
+        rig.set_channel(3, "on")
     ```
 
     Leaving the block, or calling `.release()`, releases it. The Rig stays Locked while
@@ -611,7 +418,7 @@ def left_locked(rig: Rig) -> bool:
     """Whether `rig`'s connection dropped before its Lock could be released, so the Rig stays
     Locked by its Holder until that Holder reconnects (ADR 0009). For the CLI, without making
     it part of `Rig`'s public API."""
-    return rig._locks.left_locked  # pyright: ignore[reportPrivateUsage]
+    return rig._left_locked  # pyright: ignore[reportPrivateUsage]
 
 
 def _default_holder() -> str:
@@ -639,17 +446,6 @@ def _checked_holder(holder: str) -> str:
     return holder
 
 
-def ch(*channels: int) -> int:
-    """The bits of `channels`, bit 0 for CH1, to pass `apply()`: `ch(1, 5) == 0x0011`.
-
-    Raises `ValueError` if a Channel isn't 1 to 16.
-    """
-    bits = 0
-    for channel in channels:
-        bits |= _bit(channel)
-    return bits
-
-
 def _bit(channel: int) -> int:
     # `in range` alone would let `True` through as CH1 and `1.0` through as a float.
     if type(channel) is not int or channel not in CHANNELS:
@@ -657,35 +453,7 @@ def _bit(channel: int) -> int:
     return 1 << (channel - 1)
 
 
-def _channels_in(bits: int) -> list[int]:
-    """The Channels whose bits are set, in order."""
-    return [channel for channel in CHANNELS if bits & (1 << (channel - 1))]
-
-
-def _channels_named(bits: int) -> str:
-    """`Channel 3`, or `Channels 3, 5` for several."""
-    channels = _channels_in(bits)
-    return f"Channel{'s' if len(channels) > 1 else ''} {', '.join(map(str, channels))}"
-
-
-def missing(obj: object, name: str, removed: Mapping[str, str]) -> AttributeError:
-    """The error for reading `obj.name`, which doesn't exist, naming its replacement if it was
-    one of the `removed` methods."""
-    if (instead := removed.get(name)) is None:
-        return AttributeError(
-            f"{type(obj).__name__!r} object has no attribute {name!r}", name=name, obj=obj
-        )
-    # `name=None` stops Python adding a "Did you mean" guess, such as set_all for set_channels.
-    return AttributeError(
-        f"{type(obj).__name__}.{name}() was removed in itch-py 0.3.0. {instead}", name=None
-    )
-
-
-def _checked_word(value: object, name: str) -> int:
-    # `bool` is an `int`, but `apply(True)` is surely a mistake.
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= ALL_CHANNELS:
-        raise ValueError(
-            f"{value!r} can't be a Channel {name}: it must be an int from 0 to 0xFFFF, bit 0 "
-            "for CH1."
-        )
-    return value
+def _is_on(position: Position) -> bool:
+    if position not in ("on", "off"):
+        raise ValueError(f'{position!r} isn\'t a Channel position: use "on" or "off".')
+    return position == "on"
