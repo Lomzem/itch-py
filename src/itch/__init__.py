@@ -8,10 +8,7 @@ from itch._errors import (
     DisconnectedError,
     HardwareFaultError,
     ItchError,
-    LeaseError,
-    LeaseHeldError,
-    LeaseLostError,
-    LeaseRequiredError,
+    LockedError,
     NotRespondingError,
     ProfileError,
     ProtocolMismatchError,
@@ -19,10 +16,11 @@ from itch._errors import (
     StorageFaultError,
 )
 from itch._profile import Encoding, Profile, alias, field
-from itch._rig import Rig, Session, list_rigs
-from itch._status import Status
+from itch._rig import Rig, list_rigs
+from itch._status import AddressMode, Link, Status
 
 __all__ = [
+    "AddressMode",
     "AmbiguousRigError",
     "BatchConflictError",
     "DevelopmentBuildWarning",
@@ -30,10 +28,8 @@ __all__ = [
     "Encoding",
     "HardwareFaultError",
     "ItchError",
-    "LeaseError",
-    "LeaseHeldError",
-    "LeaseLostError",
-    "LeaseRequiredError",
+    "Link",
+    "LockedError",
     "NotRespondingError",
     "Profile",
     "ProfileError",
@@ -41,7 +37,6 @@ __all__ = [
     "Rig",
     "RigInfo",
     "RigNotFoundError",
-    "Session",
     "Status",
     "StorageFaultError",
     "alias",

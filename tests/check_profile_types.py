@@ -19,17 +19,16 @@ Resolution = Literal["720p", "1080p", "4k"]
 
 def script(rig: Rig) -> None:
     dut = AcmeWidget(rig)
-    with rig.session():
-        dut.resolution.set("1080p")
-        dut.mode.set("night", encoding=2)
-        dut.mode.set("movie")
-        for encoding in dut.mode.encodings("night"):
-            encoding.set()
-        for encoding in dut.mode.all_encodings():
-            encoding.set()
-        with dut.batch():
-            dut.refresh.set("50hz")
-            dut.mode.set("night")
+    dut.resolution.set("1080p")
+    dut.mode.set("night", encoding=2)
+    dut.mode.set("movie")
+    for encoding in dut.mode.encodings("night"):
+        encoding.set()
+    for encoding in dut.mode.all_encodings():
+        encoding.set()
+    with dut.batch():
+        dut.refresh.set("50hz")
+        dut.mode.set("night")
 
     assert_type(dut.resolution.get(), Resolution)
     assert_type(dut.mode.get(), Mode)

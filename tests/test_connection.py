@@ -6,11 +6,11 @@ from scripted_rig import ScriptedRig, after_connecting
 
 from itch import DisconnectedError, ItchError, NotRespondingError, Rig, _connection
 from itch._wire import (
+    ClearReply,
     GetChannels,
     GetChannelsReply,
     Message,
     OkResponse,
-    ReleaseLeaseReply,
     Request,
 )
 
@@ -69,14 +69,14 @@ def test_a_dropped_connection_fails_every_later_call_without_reconnecting(
 
 def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
     def answer(request: Request) -> list[Message]:
-        return [OkResponse(request.request_id, ReleaseLeaseReply())]
+        return [OkResponse(request.request_id, ClearReply(0))]
 
     with (
         after_connecting(answer) as peer,
         Rig.connect(peer.url) as rig,
         pytest.raises(
             ItchError,
-            match=r"^Rig bench3 sent a malformed reply: ReleaseLeaseReply answers GetChannels$",
+            match=r"^Rig bench3 sent a malformed reply: ClearReply answers GetChannels$",
         ),
     ):
         rig.get_channels()

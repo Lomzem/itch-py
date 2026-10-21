@@ -2,7 +2,7 @@
 
 The sim and the conformance vectors come from the first of:
 
-- `ITCH_SIM`: path to an `itch-sim` binary, and `ITCH_VECTORS`: path to `vectors-v1.json`.
+- `ITCH_SIM`: path to an `itch-sim` binary, and `ITCH_VECTORS`: path to `vectors-v3.json`.
 - `ITCH_REPO` or the first sibling `itch-integration` or `itch` checkout: the sim is built there
   with `cargo build -p itch-sim` and the vectors are read from `docs/protocol/`.
 - The `itch` release pinned in `itch_release.py`, downloaded once into a local cache.
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from itch_release import TAG, Release, fetch
+from itch_release import TAG, VECTORS_ASSET, Release, fetch
 
 from itch import Rig
 
@@ -68,7 +68,7 @@ def vectors() -> dict[str, Any]:
     if env := os.environ.get("ITCH_VECTORS"):
         path = Path(env)
     elif repo := _itch_repo():
-        path = repo / "docs" / "protocol" / "vectors-v1.json"
+        path = repo / "docs" / "protocol" / VECTORS_ASSET
     else:
         path = _release().vectors
     return json.loads(path.read_text(encoding="utf-8"))
@@ -83,7 +83,7 @@ class RunningSim:
         command: Sequence[str | Path] | None = None,
         startup_timeout: float = 10,
     ) -> None:
-        """Starts the sim with command-line `args`, such as `--clock-rate 1000`.
+        """Starts the sim with command-line `args`, such as `--storage-fault`.
 
         `command` runs instead of the sim binary, to test the startup deadline.
         """
@@ -127,7 +127,7 @@ class RunningSim:
 
 @pytest.fixture(scope="session")
 def sim() -> Iterator[str]:
-    """One `itch-sim` for the whole session. Yields its `tcp://host:port` name."""
+    """One `itch-sim` for the whole test run. Yields its `tcp://host:port` name."""
     with RunningSim() as running:
         yield running.url
 
@@ -141,6 +141,6 @@ def own_sim() -> Iterator[RunningSim]:
 
 @pytest.fixture
 def rig(sim: str) -> Iterator[Rig]:
-    """A connection to the session's `itch-sim`."""
+    """A connection to the shared `itch-sim`."""
     with Rig.connect(sim) as rig:
         yield rig

@@ -12,10 +12,10 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from itch_release import SIM_ASSET, fetch
+from itch_release import SIM_ASSET, VECTORS_ASSET, fetch
 
 SIM = b"#!/bin/sh\necho fake itch-sim\n"
-VECTORS = b'{"format": 1, "protocol": 1}\n'
+VECTORS = b'{"format": 1, "protocol": 3}\n'
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -31,7 +31,7 @@ def publish(directory: Path, assets: dict[str, bytes], hashes: dict[str, bytes])
     manifest = {
         "tag": "v9.9.9",
         "commit": "0" * 40,
-        "protocol": 1,
+        "protocol": 3,
         "sha256": {name: hashlib.sha256(content).hexdigest() for name, content in hashes.items()},
     }
     (directory / "manifest.json").write_text(json.dumps(manifest))
@@ -56,7 +56,7 @@ def test_fetch_downloads_the_release_and_then_runs_offline(
     server: tuple[str, Path], tmp_path: Path
 ) -> None:
     url, root = server
-    assets = {SIM_ASSET: SIM, "vectors-v1.json": VECTORS}
+    assets = {SIM_ASSET: SIM, VECTORS_ASSET: VECTORS}
     publish(root / "v9.9.9", assets, assets)
     cache = tmp_path / "cache"
 
@@ -79,8 +79,8 @@ def test_fetch_refuses_an_asset_that_does_not_match_the_manifest(
     url, root = server
     publish(
         root / "v9.9.9",
-        {SIM_ASSET: b"tampered", "vectors-v1.json": VECTORS},
-        {SIM_ASSET: SIM, "vectors-v1.json": VECTORS},
+        {SIM_ASSET: b"tampered", VECTORS_ASSET: VECTORS},
+        {SIM_ASSET: SIM, VECTORS_ASSET: VECTORS},
     )
 
     with pytest.raises(RuntimeError, match=SIM_ASSET):

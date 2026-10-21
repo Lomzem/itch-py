@@ -6,10 +6,18 @@ import socket
 import warnings
 
 import pytest
-from scripted_rig import ACME_HELLO, answering
+from scripted_rig import ACME_HELLO, ScriptedRig, answering
 
 from itch import DevelopmentBuildWarning, ItchError, ProtocolMismatchError, Rig
-from itch._wire import FEATURE_WIFI, Hello, HelloReply, OkResponse, UnknownEvent
+from itch._wire import Hello, OkResponse, Request, UnknownEvent
+
+# `Hello` result bodies from the conformance vectors of earlier protocols (itch v0.1.1 and
+# v0.2.0), for the made-up Rig `itch-C02718`. Protocol 1 has one more byte after `dirty`, so it
+# doesn't decode as protocol 3.
+OLD_HELLO_BODIES = {
+    1: "0100 05312e302e30 00 00 10 0141 6055f9c02718 0b697463682d433032373138",
+    2: "0200 05312e302e30 00 10 0141 6055f9c02718 0b697463682d433032373138",
+}
 
 
 def test_connects_to_the_simulator(sim: str) -> None:
@@ -34,27 +42,34 @@ def test_ignores_unknown_events_and_stale_replies() -> None:
         assert rig.label == "bench3"
 
 
-def test_refuses_a_protocol_mismatch() -> None:
-    with answering(dataclasses.replace(ACME_HELLO, protocol=2)) as peer:
+def answering_hello_body(body: str) -> ScriptedRig:
+    """A peer that answers `Hello` with the raw result `body`, in hex."""
+
+    def answer(request: Request) -> list[bytes]:
+        header = b"\x81" + request.request_id.to_bytes(4, "little") + b"\x00"
+        return [header + bytes.fromhex(body)]
+
+    return ScriptedRig(answer)
+
+
+@pytest.mark.parametrize("theirs", OLD_HELLO_BODIES, ids=lambda theirs: f"protocol-{theirs}")
+def test_refuses_a_rig_speaking_an_earlier_protocol(theirs: int) -> None:
+    with answering_hello_body(OLD_HELLO_BODIES[theirs]) as peer:
         with pytest.raises(ProtocolMismatchError) as raised:
             Rig.connect(peer.url)
         assert peer.closed.wait(2)
-    assert isinstance(raised.value, ItchError)
-    message = str(raised.value)
-    assert "protocol 2" in message, message
-    assert "protocol 1" in message, message
-    assert "update the Rig or itch-py" in message, message
+    assert (raised.value.rig_protocol, raised.value.client_protocol) == (theirs, 3)
+    assert str(raised.value) == (
+        f"Rig {peer.url} speaks protocol {theirs}, but this itch-py speaks protocol 3. "
+        "Have the dev update the Rig or itch-py."
+    )
 
 
-@pytest.mark.parametrize(
-    "hello",
-    [
-        pytest.param(dataclasses.replace(ACME_HELLO, dirty=True), id="dirty"),
-        pytest.param(dataclasses.replace(ACME_HELLO, features=FEATURE_WIFI), id="wifi"),
-    ],
-)
-def test_warns_about_a_development_build(hello: HelloReply) -> None:
-    with answering(hello) as peer, pytest.warns(DevelopmentBuildWarning, match="bench3"):
+def test_warns_about_a_development_build() -> None:
+    with (
+        answering(dataclasses.replace(ACME_HELLO, dirty=True)) as peer,
+        pytest.warns(DevelopmentBuildWarning, match="bench3"),
+    ):
         Rig.connect(peer.url).close()
 
 

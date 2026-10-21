@@ -35,8 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         with Rig.connect(args.rig) as rig:
             old = rig.label
-            with rig.session():
-                rig.set_label(args.label)
+            rig.set_label(args.label)
             print(f"Rig {old} is now {rig.label}.")
     except (ItchError, ValueError) as err:
         print(f"itch: {err}", file=sys.stderr)

@@ -1,7 +1,7 @@
 """Transports carry whole payloads to and from one Rig.
 
-TCP reaches `itch-sim` and dev-build Rigs, and USB serial (in `_usb`) reaches the rest. Both
-are byte streams that share TAFP framing through `StreamTransport`.
+TCP reaches `itch-sim` and Rigs on the network, and USB serial (in `_usb`) reaches Rigs plugged
+in. Both are byte streams that share TAFP framing through `StreamTransport`.
 """
 
 from __future__ import annotations

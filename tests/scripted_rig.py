@@ -1,7 +1,8 @@
 """A scripted TCP peer for the few cases `itch-sim` can't produce.
 
 It isn't a Rig: it answers each request with the messages `answer` returns, maybe none, and
-records what it was sent.
+records what it was sent. An answer given as `bytes` is sent as a raw payload, for replies this
+itch-py's codec can't encode.
 """
 
 from __future__ import annotations
@@ -13,17 +14,11 @@ from types import TracebackType
 
 from itch._frame import FrameDecoder, encode_frame
 from itch._wire import (
-    AcquireLease,
-    AcquireLeaseReply,
     Hello,
     HelloReply,
     Message,
     OkResponse,
-    ReleaseLease,
-    ReleaseLeaseReply,
-    ReplyBody,
     Request,
-    RequestBody,
     SetLogLevel,
     SetLogLevelReply,
     WriteChannels,
@@ -33,10 +28,9 @@ from itch._wire import (
 )
 
 ACME_HELLO = HelloReply(
-    protocol=1,
+    protocol=3,
     firmware_version="1.0.0",
     dirty=False,
-    features=0,
     channel_count=16,
     board_revision="A",
     hardware_id=bytes.fromhex("60 55 f9 c0 27 18"),
@@ -46,7 +40,7 @@ ACME_HELLO = HelloReply(
 
 
 class ScriptedRig:
-    def __init__(self, answer: Callable[[Request], Iterable[Message]]) -> None:
+    def __init__(self, answer: Callable[[Request], Iterable[Message | bytes]]) -> None:
         self._answer = answer
         self._listener = socket.create_server(("127.0.0.1", 0))
         host, port = self._listener.getsockname()
@@ -78,7 +72,8 @@ class ScriptedRig:
                     assert isinstance(request, Request)
                     self.requests.append(request)
                     for reply in self._answer(request):
-                        connection.sendall(encode_frame(encode(reply)))
+                        payload = reply if isinstance(reply, bytes) else encode(reply)
+                        connection.sendall(encode_frame(payload))
         self.closed.set()
 
 
@@ -109,18 +104,11 @@ def after_connecting(answer: Callable[[Request], Iterable[Message]]) -> Scripted
 
 
 def granting_writes() -> ScriptedRig:
-    """A peer that grants the Lease and takes every Channel write, so a test can count them.
+    """A peer that takes every Channel write, so a test can count them.
 
     The sim can't show how many writes reached it.
     """
-    replies: dict[type[RequestBody], ReplyBody] = {
-        AcquireLease: AcquireLeaseReply(10_000),
-        WriteChannels: WriteChannelsReply(0),
-        ReleaseLease: ReleaseLeaseReply(),
-    }
-    return after_connecting(
-        lambda request: [OkResponse(request.request_id, replies[type(request.body)])]
-    )
+    return after_connecting(lambda request: [OkResponse(request.request_id, WriteChannelsReply(0))])
 
 
 def channel_writes(peer: ScriptedRig) -> list[tuple[int, int]]:

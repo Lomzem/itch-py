@@ -58,8 +58,7 @@ def _relay(controller: int, sim: socket.socket, stop: int) -> None:
 def test_talks_to_a_rig_through_pyserial(pty_rig: str) -> None:
     with Rig.connect() as rig:
         assert rig.hardware_id == SIM_HARDWARE_ID
-        with rig.session():
-            rig.set_channel(3, "on")
+        rig.set_channel(3, "on")
         assert rig.get_channel(3) == "on"
 
 

@@ -47,7 +47,7 @@ class Connection:
         """The Rig's name in messages: its Label once it has answered `Hello`."""
         self._request_ids = itertools.count(1)
         self._lock = threading.Lock()
-        """Serialises requests from the script and the Session heartbeat."""
+        """Serialises requests from several threads."""
         self._log_level = 0  # Log Events from before SetLogLevel's reply are a backlog.
         self._python_log_level = logging.NOTSET
         """The user's `log_level`: Rig records below it aren't forwarded."""
@@ -63,15 +63,13 @@ class Connection:
     ) -> Self:
         """Takes over an open transport, sends `Hello` and sets the Rig's log level.
 
-        Raises `ProtocolMismatchError` if the Rig speaks another protocol, and `ItchError` if
-        `hardware_id` is given and the Rig's `Hello` names another. Closes the transport if it
-        raises.
+        Raises `ProtocolMismatchError` if the Rig speaks another protocol, even one whose
+        `Hello` this itch-py can't decode, and `ItchError` if `hardware_id` is given and the
+        Rig's `Hello` names another. Closes the transport if it raises.
         """
         connection = cls(transport)
         try:
             hello = connection.request(_wire.Hello(), _wire.HelloReply)
-            if hello.protocol != _wire.PROTOCOL:
-                raise ProtocolMismatchError(connection.name, hello.protocol, _wire.PROTOCOL)
             connection.hello = hello
             if hardware_id is not None and not same_hardware_id(
                 connection.hardware_id, hardware_id
@@ -160,6 +158,10 @@ class Connection:
             payload = self._transport.receive(remaining)
             if payload is None:
                 break
+            if isinstance(body, _wire.Hello):
+                theirs = _wire.hello_protocol(payload, request_id)
+                if theirs not in (None, _wire.PROTOCOL):
+                    raise ProtocolMismatchError(self.name, theirs, _wire.PROTOCOL)
             message = _wire.decode(payload)
             if isinstance(message, _wire.LogEvent):
                 events.append(message)

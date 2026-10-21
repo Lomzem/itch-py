@@ -17,17 +17,30 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import ClassVar, Self
 
-PROTOCOL = 1
+PROTOCOL = 3
 """Bumped on any message change. A Rig must report exactly this."""
 
 MAX_LABEL = 64
-"""The longest Label or Holder text, in bytes."""
+"""The longest Label text, in bytes."""
+
+MAX_HOLDER = 64
+"""The longest Holder text, in bytes."""
+
+MAX_SSID = 32
+"""The longest Wi-Fi SSID, in bytes."""
+
+MIN_PASSPHRASE = 8
+MAX_PASSPHRASE = 63
+"""A Wi-Fi passphrase is 8 to 63 bytes, or empty to clear the credentials."""
 
 MAX_LAST_PANIC = 64
 """The longest `last_panic` text, in bytes."""
 
-FEATURE_WIFI = 1 << 0
-"""`Hello` `features` bit: the firmware was built with the `wifi` feature."""
+LINK_CONNECTED = 2
+"""`GetStatus` `link` runs from 0 off through 1 joining to 2 connected."""
+
+ADDRESS_STATIC = 1
+"""`mode` is 0 DHCP or 1 static."""
 
 LOG_LEVEL_DEBUG = 4
 """Rig log levels run from 0 off through 1 error, 2 warn and 3 info to 4 debug."""
@@ -51,24 +64,22 @@ class RequestType(IntEnum):
     GetStatus = 0x05
     SetLabel = 0x06
     SetLogLevel = 0x07
-    AcquireLease = 0x08
-    RenewLease = 0x09
-    ReleaseLease = 0x0A
+    Lock = 0x0B
+    ReleaseLock = 0x0C
+    SetWifi = 0x0D
+    SetAddress = 0x0E
 
 
 class ErrorCode(IntEnum):
     """A non-zero response `status`. Rigs may send codes not listed here."""
 
     UnknownRequest = 1
-    UnsupportedVersion = 2
     Malformed = 3
-    LeaseRequired = 4
-    LeaseHeld = 5
-    LeaseLost = 6
     Busy = 7
     HardwareFault = 8
     StorageFault = 9
     Internal = 10
+    Locked = 11
 
 
 class DecodeError(ValueError):
@@ -121,6 +132,17 @@ class _Reader:
         except UnicodeDecodeError as err:
             raise DecodeError("text isn't valid UTF-8") from err
 
+    def ipv4(self) -> bytes:
+        """An IPv4 address: 4 bytes in network order."""
+        return self.raw(4)
+
+    def mode(self) -> int:
+        """An address `mode`: 0 DHCP or 1 static."""
+        mode = self.u8()
+        if mode > ADDRESS_STATIC:
+            raise DecodeError(f"address mode is {mode}, not 0 DHCP or 1 static")
+        return mode
+
     def rest(self) -> bytes:
         self._pos, start = len(self._data), self._pos
         return self._data[start:]
@@ -151,6 +173,11 @@ class _Writer:
 
     def raw(self, data: bytes) -> None:
         self._out += data
+
+    def ipv4(self, address: bytes) -> None:
+        if len(address) != 4:
+            raise ValueError(f"an IPv4 address is 4 bytes, not {len(address)}")
+        self.raw(address)
 
     def text(self, text: str, max_len: int = _MAX_TEXT) -> None:
         data = text.encode("utf-8")
@@ -191,7 +218,6 @@ class HelloReply:
     protocol: int
     firmware_version: str
     dirty: bool
-    features: int
     channel_count: int
     board_revision: str
     hardware_id: bytes
@@ -201,7 +227,6 @@ class HelloReply:
         w.u16(self.protocol)
         w.text(self.firmware_version)
         w.bool(self.dirty)
-        w.u8(self.features)
         w.u8(self.channel_count)
         w.text(self.board_revision)
         w.raw(self.hardware_id)
@@ -213,7 +238,6 @@ class HelloReply:
             protocol=r.u16(),
             firmware_version=r.text(),
             dirty=r.bool(),
-            features=r.u8(),
             channel_count=r.u8(),
             board_revision=r.text(),
             hardware_id=r.raw(6),
@@ -258,18 +282,19 @@ class WriteChannels:
 
     TYPE: ClassVar[RequestType] = RequestType.WriteChannels
 
-    token: int
+    holder: str
+    """Empty = no Holder."""
     mask: int
     values: int
 
     def encode(self, w: _Writer) -> None:
-        w.u64(self.token)
+        w.text(self.holder, MAX_HOLDER)
         w.u16(self.mask)
         w.u16(self.values)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(token=r.u64(), mask=r.u16(), values=r.u16())
+        return cls(holder=r.text(MAX_HOLDER), mask=r.u16(), values=r.u16())
 
 
 @dataclass(frozen=True)
@@ -291,14 +316,15 @@ class WriteChannelsReply:
 class Clear:
     TYPE: ClassVar[RequestType] = RequestType.Clear
 
-    token: int
+    holder: str
+    """Empty = no Holder."""
 
     def encode(self, w: _Writer) -> None:
-        w.u64(self.token)
+        w.text(self.holder, MAX_HOLDER)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(token=r.u64())
+        return cls(holder=r.text(MAX_HOLDER))
 
 
 @dataclass(frozen=True)
@@ -333,6 +359,8 @@ class GetStatus:
 
 @dataclass(frozen=True)
 class GetStatusReply:
+    """The Rig's health, Lock and network. Decoding rejects fields that contradict each other."""
+
     TYPE: ClassVar[RequestType] = RequestType.GetStatus
 
     uptime_ms: int
@@ -340,41 +368,79 @@ class GetStatusReply:
     """The raw ESP32-S3 `SocResetReason`, or 0 if unknown."""
     last_panic: str
     """Empty = no panic."""
-    holder: str
-    """Empty = no Holder."""
     crc_failures: int
     oversized_frames: int
     malformed_frames: int
     dropped_logs: int
     expander_faults: int
     usb_tx_dropped: int
+    holder: str
+    """Who holds the Lock. Empty = unlocked."""
+    wifi_configured: bool
+    ssid: str
+    """Empty exactly when `wifi_configured` is false. The passphrase is never reported."""
+    link: int
+    """0 off, 1 joining or 2 connected."""
+    current_address: bytes
+    """Non-zero exactly when connected."""
+    mode: int
+    """0 DHCP or 1 static, with `address`, `prefix` and `gateway` as `SetAddress` takes them."""
+    address: bytes
+    prefix: int
+    gateway: bytes
 
     def encode(self, w: _Writer) -> None:
         w.u64(self.uptime_ms)
         w.u8(self.reset_reason)
         w.text(self.last_panic, MAX_LAST_PANIC)
-        w.text(self.holder, MAX_LABEL)
         w.u32(self.crc_failures)
         w.u32(self.oversized_frames)
         w.u32(self.malformed_frames)
         w.u32(self.dropped_logs)
         w.u32(self.expander_faults)
         w.u32(self.usb_tx_dropped)
+        w.text(self.holder, MAX_HOLDER)
+        w.bool(self.wifi_configured)
+        w.text(self.ssid, MAX_SSID)
+        w.u8(self.link)
+        w.ipv4(self.current_address)
+        w.u8(self.mode)
+        w.ipv4(self.address)
+        w.u8(self.prefix)
+        w.ipv4(self.gateway)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(
+        status = cls(
             uptime_ms=r.u64(),
             reset_reason=r.u8(),
             last_panic=r.text(MAX_LAST_PANIC),
-            holder=r.text(MAX_LABEL),
             crc_failures=r.u32(),
             oversized_frames=r.u32(),
             malformed_frames=r.u32(),
             dropped_logs=r.u32(),
             expander_faults=r.u32(),
             usb_tx_dropped=r.u32(),
+            holder=r.text(MAX_HOLDER),
+            wifi_configured=r.bool(),
+            ssid=r.text(MAX_SSID),
+            link=r.u8(),
+            current_address=r.ipv4(),
+            mode=r.mode(),
+            address=r.ipv4(),
+            prefix=r.u8(),
+            gateway=r.ipv4(),
         )
+        if status.link > LINK_CONNECTED:
+            raise DecodeError(f"link is {status.link}, not 0 off, 1 joining or 2 connected")
+        if status.wifi_configured == (status.ssid == ""):
+            raise DecodeError("wifi_configured disagrees with the SSID")
+        if not status.wifi_configured and status.link:
+            raise DecodeError("the link is up without Wi-Fi credentials")
+        if (status.link == LINK_CONNECTED) != (status.current_address != _ZERO_ADDRESS):
+            raise DecodeError("current_address disagrees with the link")
+        _check_addressing(status.mode, status.address, status.prefix, status.gateway)
+        return status
 
 
 # --- SetLogLevel and the Log Event ------------------------------------------------------------
@@ -384,16 +450,17 @@ class GetStatusReply:
 class SetLabel:
     TYPE: ClassVar[RequestType] = RequestType.SetLabel
 
-    token: int
+    holder: str
+    """Empty = no Holder."""
     label: str
 
     def encode(self, w: _Writer) -> None:
-        w.u64(self.token)
+        w.text(self.holder, MAX_HOLDER)
         w.text(self.label, MAX_LABEL)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(token=r.u64(), label=r.text(MAX_LABEL))
+        return cls(holder=r.text(MAX_HOLDER), label=r.text(MAX_LABEL))
 
 
 @dataclass(frozen=True)
@@ -473,60 +540,105 @@ class LogEvent:
         return cls(level=level, dropped=dropped, text=text)
 
 
-# --- Lease -------------------------------------------------------------------------------------
+# --- Lock -------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class AcquireLease:
-    TYPE: ClassVar[RequestType] = RequestType.AcquireLease
+class Lock:
+    TYPE: ClassVar[RequestType] = RequestType.Lock
 
-    token: int
+    holder: str
+    """Never empty."""
     takeover: bool
-    holder: str
+    """Take the Lock from another Holder."""
 
     def encode(self, w: _Writer) -> None:
-        w.u64(self.token)
+        w.text(self.holder, MAX_HOLDER)
         w.bool(self.takeover)
-        w.text(self.holder, MAX_LABEL)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(token=r.u64(), takeover=r.bool(), holder=r.text(MAX_LABEL))
+        if not (holder := r.text(MAX_HOLDER)):
+            raise DecodeError("Lock has an empty holder")
+        return cls(holder=holder, takeover=r.bool())
 
 
 @dataclass(frozen=True)
-class AcquireLeaseReply:
-    TYPE: ClassVar[RequestType] = RequestType.AcquireLease
-
-    ttl_ms: int
+class LockReply:
+    TYPE: ClassVar[RequestType] = RequestType.Lock
 
     def encode(self, w: _Writer) -> None:
-        w.u32(self.ttl_ms)
+        pass
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(ttl_ms=r.u32())
+        return cls()
 
 
 @dataclass(frozen=True)
-class RenewLease:
-    TYPE: ClassVar[RequestType] = RequestType.RenewLease
+class ReleaseLock:
+    TYPE: ClassVar[RequestType] = RequestType.ReleaseLock
 
-    token: int
     holder: str
 
     def encode(self, w: _Writer) -> None:
-        w.u64(self.token)
-        w.text(self.holder, MAX_LABEL)
+        w.text(self.holder, MAX_HOLDER)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(token=r.u64(), holder=r.text(MAX_LABEL))
+        return cls(holder=r.text(MAX_HOLDER))
 
 
 @dataclass(frozen=True)
-class RenewLeaseReply:
-    TYPE: ClassVar[RequestType] = RequestType.RenewLease
+class ReleaseLockReply:
+    TYPE: ClassVar[RequestType] = RequestType.ReleaseLock
+
+    def encode(self, w: _Writer) -> None:
+        pass
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        return cls()
+
+
+# --- Wi-Fi and address -------------------------------------------------------------------------
+# IPv4 addresses are 4 bytes in network order, zero meaning none.
+
+_ZERO_ADDRESS = bytes(4)
+
+
+@dataclass(frozen=True)
+class SetWifi:
+    """Gives the Rig Wi-Fi credentials, or clears them with an empty `ssid` and `passphrase`."""
+
+    TYPE: ClassVar[RequestType] = RequestType.SetWifi
+
+    holder: str
+    """Empty = no Holder."""
+    ssid: str
+    """1 to 32 bytes, or empty to clear the credentials."""
+    passphrase: str
+    """8 to 63 bytes, or empty with an empty `ssid`."""
+
+    def encode(self, w: _Writer) -> None:
+        w.text(self.holder, MAX_HOLDER)
+        w.text(self.ssid, MAX_SSID)
+        w.text(self.passphrase, MAX_PASSPHRASE)
+
+    @classmethod
+    def decode(cls, r: _Reader) -> Self:
+        wifi = cls(
+            holder=r.text(MAX_HOLDER), ssid=r.text(MAX_SSID), passphrase=r.text(MAX_PASSPHRASE)
+        )
+        clears = wifi.ssid == wifi.passphrase == ""
+        if not clears and (not wifi.ssid or len(wifi.passphrase.encode()) < MIN_PASSPHRASE):
+            raise DecodeError("SetWifi needs an SSID and an 8 to 63 byte passphrase, or neither")
+        return wifi
+
+
+@dataclass(frozen=True)
+class SetWifiReply:
+    TYPE: ClassVar[RequestType] = RequestType.SetWifi
 
     def encode(self, w: _Writer) -> None:
         pass
@@ -537,22 +649,45 @@ class RenewLeaseReply:
 
 
 @dataclass(frozen=True)
-class ReleaseLease:
-    TYPE: ClassVar[RequestType] = RequestType.ReleaseLease
+class SetAddress:
+    """Sets DHCP, with every other field zero, or a static address, prefix and gateway."""
 
-    token: int
+    TYPE: ClassVar[RequestType] = RequestType.SetAddress
+
+    holder: str
+    """Empty = no Holder."""
+    mode: int
+    """0 DHCP or 1 static."""
+    address: bytes
+    """Static: unicast. DHCP: zero."""
+    prefix: int
+    """Static: 1 to 32. DHCP: zero."""
+    gateway: bytes
+    """Static: zero for none, or unicast. DHCP: zero."""
 
     def encode(self, w: _Writer) -> None:
-        w.u64(self.token)
+        w.text(self.holder, MAX_HOLDER)
+        w.u8(self.mode)
+        w.ipv4(self.address)
+        w.u8(self.prefix)
+        w.ipv4(self.gateway)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        return cls(token=r.u64())
+        address = cls(
+            holder=r.text(MAX_HOLDER),
+            mode=r.mode(),
+            address=r.ipv4(),
+            prefix=r.u8(),
+            gateway=r.ipv4(),
+        )
+        _check_addressing(address.mode, address.address, address.prefix, address.gateway)
+        return address
 
 
 @dataclass(frozen=True)
-class ReleaseLeaseReply:
-    TYPE: ClassVar[RequestType] = RequestType.ReleaseLease
+class SetAddressReply:
+    TYPE: ClassVar[RequestType] = RequestType.SetAddress
 
     def encode(self, w: _Writer) -> None:
         pass
@@ -560,6 +695,25 @@ class ReleaseLeaseReply:
     @classmethod
     def decode(cls, r: _Reader) -> Self:
         return cls()
+
+
+def is_unicast(address: bytes) -> bool:
+    """Whether `address` is unicast: not zero, not 255.255.255.255 and not multicast."""
+    return address not in (_ZERO_ADDRESS, b"\xff" * 4) and not 224 <= address[0] <= 239
+
+
+def _check_addressing(mode: int, address: bytes, prefix: int, gateway: bytes) -> None:
+    """Raises `DecodeError` unless the fields are a configuration `SetAddress` could give."""
+    if mode == ADDRESS_STATIC:
+        valid = (
+            is_unicast(address)
+            and 1 <= prefix <= 32
+            and (gateway == _ZERO_ADDRESS or is_unicast(gateway))
+        )
+    else:
+        valid = address == gateway == _ZERO_ADDRESS and prefix == 0
+    if not valid:
+        raise DecodeError("the address configuration isn't one SetAddress could give")
 
 
 # --- Envelope ----------------------------------------------------------------------------------
@@ -572,9 +726,10 @@ RequestBody = (
     | GetStatus
     | SetLabel
     | SetLogLevel
-    | AcquireLease
-    | RenewLease
-    | ReleaseLease
+    | Lock
+    | ReleaseLock
+    | SetWifi
+    | SetAddress
 )
 ReplyBody = (
     HelloReply
@@ -584,9 +739,10 @@ ReplyBody = (
     | GetStatusReply
     | SetLabelReply
     | SetLogLevelReply
-    | AcquireLeaseReply
-    | RenewLeaseReply
-    | ReleaseLeaseReply
+    | LockReply
+    | ReleaseLockReply
+    | SetWifiReply
+    | SetAddressReply
 )
 
 _REQUESTS: dict[int, type[RequestBody]] = {
@@ -599,9 +755,10 @@ _REQUESTS: dict[int, type[RequestBody]] = {
         GetStatus,
         SetLabel,
         SetLogLevel,
-        AcquireLease,
-        RenewLease,
-        ReleaseLease,
+        Lock,
+        ReleaseLock,
+        SetWifi,
+        SetAddress,
     )
 }
 _REPLIES: dict[int, type[ReplyBody]] = {
@@ -614,9 +771,10 @@ _REPLIES: dict[int, type[ReplyBody]] = {
         GetStatusReply,
         SetLabelReply,
         SetLogLevelReply,
-        AcquireLeaseReply,
-        RenewLeaseReply,
-        ReleaseLeaseReply,
+        LockReply,
+        ReleaseLockReply,
+        SetWifiReply,
+        SetAddressReply,
     )
 }
 _EVENTS: dict[int, type[LogEvent]] = {cls.TYPE: cls for cls in (LogEvent,)}
@@ -679,6 +837,21 @@ def encode(message: Message) -> bytes:
             w.u8(type_)
             w.raw(body)
     return w.getvalue()
+
+
+def hello_protocol(payload: bytes, request_id: int) -> int | None:
+    """The `protocol` an ok `Hello` reply to `request_id` starts with, before the rest is decoded.
+
+    `None` if `payload` isn't such a reply. Every protocol puts `protocol` first, so this reads
+    it even from a body that doesn't decode as this protocol's.
+    """
+    r = _Reader(payload)
+    try:
+        if (r.u8(), r.u32(), r.u8()) != (RequestType.Hello | _RESPONSE_BIT, request_id, _STATUS_OK):
+            return None
+        return r.u16()
+    except DecodeError:
+        return None
 
 
 def decode(payload: bytes) -> Message:
