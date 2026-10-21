@@ -7,14 +7,33 @@ import ast
 import difflib
 import inspect
 import textwrap
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Iterable, Sequence
 from contextlib import contextmanager
-from typing import Any, Generic, LiteralString, Never, NoReturn, TypeVar, cast, overload
+from types import TracebackType
+from typing import Any, Generic, LiteralString, Never, NoReturn, Self, TypeVar, cast, overload
 
 from itch._errors import BatchConflictError, ItchError, ProfileError
-from itch._rig import CHANNELS, Position, Rig
+from itch._rig import ALL_CHANNELS, CHANNELS, ChannelState, Position, Rig
 
 V = TypeVar("V", bound=LiteralString)
+P = TypeVar("P", bound="Profile")
+
+RESERVED = frozenset(
+    (
+        "set",
+        "clear",
+        "write",
+        "apply",
+        "set_all",
+        "clear_all",
+        "get",
+        "get_all",
+        "disconnect",
+        "rig",
+    )
+)
+"""The names a DUT keeps for itself, so no Field can take them. Frozen, as is a DUT's surface:
+new Rig features go on `Rig` only, so a Profile that loads today keeps loading (ADR 0001)."""
 
 
 class Alias:
@@ -354,21 +373,99 @@ class _Selection:
 
 
 class Profile:
-    """Base class of a DUT model's Profile. Subclass it and declare each Field with `field()`."""
+    """Base class of a DUT model's Profile. Subclass it and declare each Field with `field()`.
+
+    `Rig.connect("bench3", AcmeWidget)` returns a DUT: an `AcmeWidget` that drives its Fields,
+    as `dut.mode.set("night")`, and its Rig's Channels with the same verbs as a `Rig`, as
+    `dut.set(1, 5)`. Rig administration, such as `dut.rig.status()`, stays on `dut.rig`.
+
+    ```python
+    dut = Rig.connect("bench3", AcmeWidget)
+    dut.mode.set("night")
+    dut.set(1, 5)
+    dut.disconnect()
+
+    with Rig.connect("bench3", AcmeWidget) as dut:  # Leaving the block disconnects.
+        dut.mode.set("night")
+    ```
+
+    A DUT's surface is frozen: the eight Channel verbs, `disconnect`, `rig` and its Fields, and
+    nothing new as `Rig` gains features (ADR 0001). A Field can't be named `set`, `clear`,
+    `write`, `apply`, `set_all`, `clear_all`, `get`, `get_all`, `disconnect` or `rig`, or
+    start with `_`, and the list never grows, so a Profile that loads today keeps loading.
+    """
 
     _fields: dict[str, Field[Any]]
 
     def __init_subclass__(cls) -> None:
         own: dict[str, Field[Any]] = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
+        _check_names(own)
         _check_repeated_values(cls, own)
         for f in own.values():
             f._check()
         cls._fields = {**getattr(super(cls, cls), "_fields", {}), **own}
 
     def __init__(self, rig: Rig) -> None:
+        self._attach(rig)
+
+    def _attach(self, rig: Rig) -> None:
         self._rig = rig
         self._batch: dict[Field[Any], _Selection] | None = None
         """The Encoding each Field was last set to in the open batch, in first-set order."""
+
+    @property
+    def rig(self) -> Rig:
+        """The Rig this DUT is wired to, for the rest of what a Rig does: `dut.rig.status()`."""
+        return self._rig
+
+    def set(self, *channels: int) -> None:
+        """Turns `channels` on, in one write, as `Rig.set()` does: `dut.set(1, 5)`."""
+        self._rig.set(*channels)
+
+    def clear(self, *channels: int) -> None:
+        """Turns `channels` off, in one write, as `Rig.clear()` does: `dut.clear(3)`."""
+        self._rig.clear(*channels)
+
+    def write(self, *, set: Iterable[int] = (), clear: Iterable[int] = ()) -> None:
+        """Turns some Channels on and others off, in one write, as `Rig.write()` does:
+        `dut.write(set=[1, 5], clear=[3])`."""
+        self._rig.write(set=set, clear=clear)
+
+    def apply(self, state: int, /, *, mask: int = ALL_CHANNELS) -> None:
+        """Writes a 16-bit Channel state, as `Rig.apply()` does: `dut.apply(0x6742)`."""
+        self._rig.apply(state, mask=mask)
+
+    def set_all(self) -> None:
+        """Turns every Channel on, in one write."""
+        self._rig.set_all()
+
+    def clear_all(self) -> None:
+        """Turns every Channel off: the Clear."""
+        self._rig.clear_all()
+
+    def get(self, channel: int) -> bool:
+        """Whether the Rig commands Channel `channel` on, read from the Rig now."""
+        return self._rig.get(channel)
+
+    def get_all(self) -> ChannelState:
+        """The state of all 16 Channels, read from the Rig now in one request."""
+        return self._rig.get_all()
+
+    def disconnect(self) -> None:
+        """Disconnects the Rig, as `Rig.disconnect()` does: releases this script's Lock and
+        closes the connection, leaving the Channels as they are."""
+        self._rig.disconnect()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.disconnect()
 
     @contextmanager
     def batch(self) -> Generator[None]:
@@ -418,6 +515,33 @@ class Profile:
             self._batch[selection.field] = selection
         else:
             self._rig._write_channels(selection.field._mask, selection.bits)
+
+
+def check_profile(profile: object) -> None:
+    """Raises `TypeError` unless `profile` is a Profile subclass, for `Rig.connect()`."""
+    if not isinstance(profile, type) or not issubclass(profile, Profile) or profile is Profile:
+        raise TypeError(f"profile must be a Profile subclass, such as AcmeWidget, not {profile!r}.")
+
+
+def connected(profile: type[P], rig: Rig) -> P:
+    """A DUT of `profile` that owns `rig`, for `Rig.connect()`."""
+    dut = profile.__new__(profile)
+    dut._attach(rig)
+    return dut
+
+
+def _check_names(fields: dict[str, Field[Any]]) -> None:
+    """Raises `ProfileError` for a Field named after part of a DUT's own surface."""
+    for name, f in fields.items():
+        if name in RESERVED:
+            raise ProfileError(
+                f"{f._where}: Field `{name}` clashes with a DUT method; give it another name."
+            )
+        if name.startswith("_"):
+            raise ProfileError(
+                f"{f._where}: Field `{name}` starts with `_`, which a DUT keeps for itself; "
+                "give it another name."
+            )
 
 
 def _check_repeated_values(cls: type[Profile], fields: dict[str, Field[Any]]) -> None:

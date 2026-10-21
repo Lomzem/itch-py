@@ -70,3 +70,26 @@ def channel_verbs_with_computed_channel_numbers(rig: Rig) -> None:
     assert_type(rig.get(3), bool)
     assert_type(rig.get_all(), ChannelState)
     assert_type(ch(1, 5), int)
+
+
+def connecting_with_a_profile() -> None:
+    assert_type(Rig.connect("x"), Rig)
+    assert_type(Rig.connect("x", AcmeWidget), AcmeWidget)
+    assert_type(Rig.connect(profile=AcmeWidget), AcmeWidget)
+    assert_type(Rig.connect("x", profile=AcmeWidget), AcmeWidget)
+    dut = Rig.connect("x", AcmeWidget)
+    for n in range(1, 17):
+        dut.set(n)
+    assert_type(dut.get(3), bool)
+    assert_type(dut.get_all(), ChannelState)
+    dut.apply(dut.get_all())
+    dut.status()  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def connecting_with_context_managers() -> None:
+    with Rig.connect("x", AcmeWidget) as dut:
+        assert_type(dut, AcmeWidget)
+        dut.disconnect()
+    with Rig.connect("x") as rig:
+        assert_type(rig, Rig)
+        rig.disconnect()

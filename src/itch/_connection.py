@@ -60,6 +60,8 @@ class Connection:
         """Why the connection ended, kept so every later request fails the same way."""
         self._closing = False
         """Set once `close()` starts."""
+        self._closed_here = False
+        """Set if `close()` ended the connection, rather than the Rig or the transport."""
         self._network_changed = False
         """Set once the Rig accepts a network change over TCP, after which it may drop the
         connection or go silent as it moves."""
@@ -179,6 +181,7 @@ class Connection:
             with self._state:
                 if self._disconnect is None:
                     self._disconnect = Disconnected("closed")
+                    self._closed_here = True
                 self._state.notify_all()
             self._transport.stop()  # Wakes the reader.
             self._join(self._reader)
@@ -254,7 +257,7 @@ class Connection:
         """Raises `DisconnectedError` once the connection has ended. Call it holding `_state`."""
         if self._disconnect is not None:
             raise DisconnectedError(
-                self.name, network_changed=self._network_changed
+                self.name, network_changed=self._network_changed, closed=self._closed_here
             ) from self._disconnect
 
     def _mark_network_changed(self) -> None:

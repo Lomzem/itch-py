@@ -48,11 +48,17 @@ class DisconnectedError(ItchError):
     reboot turns every Channel off, so check them, or run the script again.
 
     After the Rig accepts new Wi-Fi or address settings over the network, the connection is
-    expected to end, and the message says to reconnect after the network change.
+    expected to end, and the message says to reconnect after the network change. After
+    `disconnect()`, the message says this script disconnected.
     """
 
-    def __init__(self, rig: str, *, network_changed: bool = False) -> None:
-        if network_changed:
+    def __init__(self, rig: str, *, network_changed: bool = False, closed: bool = False) -> None:
+        if closed:
+            message = (
+                f"Rig {rig} was disconnected by this script; connect again with Rig.connect() "
+                "to use it."
+            )
+        elif network_changed:
             message = (
                 f"Rig {rig} disconnected after its network settings changed, as expected; "
                 "reconnect after the network change."
