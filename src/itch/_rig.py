@@ -40,8 +40,9 @@ class Rig:
         self._holder = holder
         """Sent with every change, so a Rig Locked under this name accepts it."""
         self._label = connection.hello.label
-        self._locked = False
-        """Whether this Rig Locked the Rig and hasn't released it since."""
+        self._locks = 0
+        """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
+        last releases the Rig's Lock."""
 
     @classmethod
     def connect(
@@ -88,7 +89,7 @@ class Rig:
             rig = cls(find_rig(name, log_level), holder)
         try:
             if lock:
-                rig.lock(take_over=take_over)
+                rig.lock(take_over=take_over)  # A RigLock that only `close()` releases.
             if rig._connection.hello.dirty:
                 warnings.warn(
                     f"Rig {rig.label} runs a development build, built from uncommitted code. "
@@ -128,15 +129,16 @@ class Rig:
         and call `.release()`. `close()` releases it too. Locking again under the same Holder,
         as after a crash or a dropped connection, picks the Lock back up.
 
-        The Rig holds one Lock per Holder and doesn't count them: releasing any `RigLock`
-        unlocks the Rig, including the Lock `Rig.connect()` took.
+        Locks nest: the Rig stays Locked until every `RigLock` is released, including the
+        Lock `Rig.connect()` took, so `with rig.lock():` inside a Locked script leaves it
+        Locked.
 
         Raises `LockedError` if another Holder has Locked the Rig, unless `take_over` is true:
         that takes the Lock from them, and their next change raises `LockedError`.
         """
         self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
-        self._locked = True
-        return RigLock(self._release_lock)
+        self._locks += 1
+        return RigLock(self._release_one)
 
     def set_channel(self, ch: int, pos: Position) -> None:
         """Turns Channel `ch` on or off."""
@@ -224,15 +226,27 @@ class Rig:
         """The commanded state of all 16 Channels, bit 0 for CH1."""
         return self._connection.request(_wire.GetChannels(), _wire.GetChannelsReply).state
 
+    def _release_one(self) -> None:
+        """Releases one `RigLock`, and the Rig's Lock with the last."""
+        if self._locks == 0:  # `close()` released it already.
+            return
+        self._locks -= 1
+        if self._locks == 0:
+            self._send_release()
+
     def _release_lock(self) -> None:
-        """Releases the Lock if this Rig holds it.
+        """Releases the Lock if any `RigLock` is live, making them all released."""
+        if self._locks == 0:
+            return
+        self._locks = 0
+        self._send_release()
+
+    def _send_release(self) -> None:
+        """Sends `ReleaseLock`.
 
         A Takeover means it is already released, so that only logs a warning. A dropped
         connection can't release it; reconnecting under the same Holder picks it back up.
         """
-        if not self._locked:
-            return
-        self._locked = False
         try:
             self._connection.request(_wire.ReleaseLock(self._holder), _wire.ReleaseLockReply)
         except LockedError:
@@ -251,7 +265,8 @@ class RigLock:
         rig.set_channel(3, "on")
     ```
 
-    Leaving the block, or calling `.release()`, releases the Lock.
+    Leaving the block, or calling `.release()`, releases it. The Rig stays Locked while
+    another `RigLock` on it is live, such as the one `Rig.connect()` took.
     """
 
     def __init__(self, release: Callable[[], None]) -> None:

@@ -111,6 +111,8 @@ with Rig.connect("bench3", lock=False) as rig:
         rig.set_channel(3, "on")
 ```
 
+Locks nest: the Rig stays Locked until every `rig.lock()` is released, and the Lock taken on connect lasts until `close()`. So `with rig.lock():` inside a script that Locked on connect leaves the Rig Locked after the block. Calling `.release()` on a Lock twice releases it once.
+
 To take the Lock from whoever holds it, after checking with them, pass `take_over=True` to `Rig.connect()` or `rig.lock()`. That's a Takeover. Their script's next change raises `LockedError` naming you, and their `close()` logs a warning instead of releasing your Lock. itch-py never takes over unless you ask.
 
 Closing releases the Lock and leaves the Channels as they are. A script that crashes or loses its connection leaves the Rig Locked. Running it again under the same Holder picks the Lock back up, with the Channels as it left them.

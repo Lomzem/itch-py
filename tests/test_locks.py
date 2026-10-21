@@ -79,6 +79,15 @@ def test_rig_lock_locks_a_look_only_rig_until_the_block_ends(own_sim: RunningSim
         assert rig.status().holder is None
 
 
+def test_rig_lock_inside_a_locked_rig_leaves_it_locked(own_sim: RunningSim) -> None:
+    with Rig.connect(own_sim.url, holder="alice") as rig:
+        with rig.lock():
+            assert rig.status().holder == "alice"
+        assert rig.status().holder == "alice"
+    with Rig.connect(own_sim.url, holder="bob", lock=False) as bob:
+        assert bob.status().holder is None
+
+
 def refusing_locks(holder: str) -> ScriptedRig:
     """A peer that connects, then refuses every `Lock` as Locked by `holder`."""
 
