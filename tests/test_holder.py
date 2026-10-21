@@ -42,6 +42,7 @@ def holders_sent(peer: ScriptedRig) -> list[str]:
 
 def test_every_change_carries_the_holder() -> None:
     with taking_changes() as peer, Rig.connect(peer.url, holder="qa@bench-pc") as rig:
+        assert rig.holder == "qa@bench-pc"
         rig.set_channel(1, "on")
         rig.clear()
         rig.set_label("bench4")
@@ -86,7 +87,7 @@ def test_a_holder_empty_or_over_64_bytes_is_a_value_error(holder: str) -> None:
 
 
 def test_changes_carrying_a_holder_succeed_on_an_unlocked_rig(own_sim: RunningSim) -> None:
-    with Rig.connect(own_sim.url, holder="qa@bench-pc") as rig:
+    with Rig.connect(own_sim.url, holder="qa@bench-pc", lock=False) as rig:
         rig.set_channels({1: "on", 2: "on"})
         rig.clear()
         rig.set_channel(3, "on")

@@ -57,7 +57,9 @@ def test_a_locked_refusal_names_the_rig_and_the_holder_from_its_detail() -> None
         pytest.raises(LockedError) as raised,
     ):
         rig.set_channel(1, "on")
-    assert str(raised.value) == "Rig bench3 is Locked by alice@ws3."
+    assert str(raised.value) == (
+        "Rig bench3 is Locked by alice@ws3; pass take_over=True to take it over."
+    )
 
 
 def test_an_unknown_error_code_raises_a_generic_itch_error() -> None:

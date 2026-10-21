@@ -20,7 +20,7 @@ from itch import (
     list_rigs,
 )
 from itch._cli import main
-from itch._wire import SetLogLevel
+from itch._wire import Hello, Lock, SetLogLevel
 
 HW_A = "60:55:F9:C0:27:18"
 
@@ -82,6 +82,14 @@ def test_a_label_lookup_sets_the_log_level_only_on_the_rig_it_picks(bench: FakeB
     Rig.connect("bench4", log_level=logging.INFO).close()
     assert SetLogLevel(3) in [request.body for request in picked.requests]
     assert SetLogLevel(3) not in [request.body for request in other.requests]
+
+
+def test_a_label_lookup_locks_only_the_rig_it_picks(bench: FakeBench) -> None:
+    other = bench.rig("/dev/ttyACM0", HW_A, "bench3")
+    picked = bench.rig("/dev/ttyACM1", HW_B, "bench4")
+    Rig.connect("bench4", holder="qa@bench-pc").close()
+    assert Lock("qa@bench-pc", takeover=False) in [request.body for request in picked.requests]
+    assert [type(request.body) for request in other.requests] == [Hello, SetLogLevel]
 
 
 def test_a_label_lookup_skips_rigs_in_use(bench: FakeBench) -> None:
@@ -198,8 +206,8 @@ def test_a_port_the_user_may_not_open_says_why(bench: FakeBench) -> None:
         Rig.connect()
 
 
-def test_list_rigs_shows_free_rigs_and_rigs_in_use(bench: FakeBench) -> None:
-    bench.rig("/dev/ttyACM0", HW_A, "bench3")
+def test_list_rigs_shows_free_rigs_and_rigs_in_use_and_locks_neither(bench: FakeBench) -> None:
+    free = bench.rig("/dev/ttyACM0", HW_A, "bench3")
     busy = bench.rig("/dev/ttyACM1", HW_B, "bench4", in_use=True)
     other = ListPortInfo("/dev/ttyUSB0", skip_link_detection=True)
     other.vid, other.pid, other.serial_number = 0x0403, 0x6001, "A10K1234"
@@ -208,6 +216,7 @@ def test_list_rigs_shows_free_rigs_and_rigs_in_use(bench: FakeBench) -> None:
         RigInfo("/dev/ttyACM0", HW_A, "bench3", "1.0.0"),
         RigInfo("/dev/ttyACM1", HW_B, None, None),
     ]
+    assert [type(request.body) for request in free.requests] == [Hello, SetLogLevel]
     assert not busy.requests
 
 

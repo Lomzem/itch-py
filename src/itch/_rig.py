@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import getpass
+import logging
 import socket
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import TracebackType
 from typing import Literal, Self
 
 from itch import _mdns, _wire
 from itch._connection import Connection
 from itch._discovery import RigInfo, find_rig, rig_infos
-from itch._errors import DevelopmentBuildWarning, ItchError
+from itch._errors import DevelopmentBuildWarning, DisconnectedError, ItchError, LockedError
 from itch._status import Status, from_reply
 from itch._transport import open_tcp
 
@@ -19,6 +20,8 @@ CHANNELS = range(1, 17)
 
 Position = Literal["on", "off"]
 """A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
+
+_LOGGER = logging.getLogger("itch")
 
 
 class Rig:
@@ -37,6 +40,9 @@ class Rig:
         self._holder = holder
         """Sent with every change, so a Rig Locked under this name accepts it."""
         self._label = connection.hello.label
+        self._locks = 0
+        """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
+        last releases the Rig's Lock."""
 
     @classmethod
     def connect(
@@ -44,6 +50,8 @@ class Rig:
         name: str | None = None,
         *,
         holder: str | None = None,
+        lock: bool = True,
+        take_over: bool = False,
         log_level: int | None = None,
         browse_timeout: float = _mdns.BROWSE_TIMEOUT,
     ) -> Self:
@@ -58,13 +66,19 @@ class Rig:
 
         `holder` names this script to colleagues in every change it makes, 1 to 64 bytes of
         UTF-8. It defaults to `user@host`, cut short to 64 bytes. Two scripts run by the same
-        user on the same computer share it.
+        user on the same computer share it, and so share the Lock.
+
+        Connecting Locks the Rig under `holder` until `close()`, so nobody else's script can
+        change it, as `rig.lock()` does. Pass `lock=False` to only look at a Rig someone else
+        has Locked: changes then succeed only while the Rig is unlocked. Pass `take_over=True`
+        to take the Lock from whoever holds it; their next change then raises `LockedError`.
 
         Raises `RigNotFoundError` or `AmbiguousRigError`, listing the Rigs found, if `name`
         doesn't pick out one Rig, and `ItchError` if the Rig that answers has another
         Hardware ID than its USB port lists or it advertises, if a Rig on the network refuses
         the connection, or if `holder` is left out and the user or host name can't be read.
-        Raises `ValueError` if `holder` is empty or over 64 bytes. Warns with
+        Raises `LockedError` if another Holder has Locked the Rig. Raises `ValueError` if
+        `holder` is empty or over 64 bytes. Warns with
         `DevelopmentBuildWarning` if the Rig runs a development build.
 
         The Rig's own log messages are off unless you pass `log_level`, such as
@@ -77,17 +91,19 @@ class Rig:
             rig = cls(Connection.open(open_tcp(name), log_level=log_level), holder)
         else:
             rig = cls(find_rig(name, log_level, browse_timeout), holder)
-        if rig._connection.hello.dirty:
-            try:
+        try:
+            if lock:
+                rig.lock(take_over=take_over)  # A RigLock that only `close()` releases.
+            if rig._connection.hello.dirty:
                 warnings.warn(
                     f"Rig {rig.label} runs a development build, built from uncommitted code. "
                     "Have the dev flash a release build before QA use it.",
                     DevelopmentBuildWarning,
                     stacklevel=2,
                 )
-            except BaseException:
-                rig.close()  # The warning was turned into an error.
-                raise
+        except BaseException:
+            rig.close()  # Locking failed, or the warning was turned into an error.
+            raise
         return rig
 
     @property
@@ -104,6 +120,29 @@ class Rig:
     def firmware_version(self) -> str:
         """The Rig's firmware version, such as `1.0.0`."""
         return self._connection.hello.firmware_version
+
+    @property
+    def holder(self) -> str:
+        """The Holder this script Locks under and sends with every change, such as `qa@bench-pc`."""
+        return self._holder
+
+    def lock(self, take_over: bool = False) -> RigLock:
+        """Locks the Rig under this script's Holder now, so nobody else's script can change it.
+
+        Use it as `with rig.lock(): ...` to release the Lock when the block ends, or keep it
+        and call `.release()`. `close()` releases it too. Locking again under the same Holder,
+        as after a crash or a dropped connection, picks the Lock back up.
+
+        Locks nest: the Rig stays Locked until every `RigLock` is released, including the
+        Lock `Rig.connect()` took, so `with rig.lock():` inside a Locked script leaves it
+        Locked.
+
+        Raises `LockedError` if another Holder has Locked the Rig, unless `take_over` is true:
+        that takes the Lock from them, and their next change raises `LockedError`.
+        """
+        self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
+        self._locks += 1
+        return RigLock(self._release_one)
 
     def set_channel(self, ch: int, pos: Position) -> None:
         """Turns Channel `ch` on or off."""
@@ -155,11 +194,18 @@ class Rig:
         return from_reply(self._connection.request(_wire.GetStatus(), _wire.GetStatusReply))
 
     def close(self) -> None:
-        """Closes the connection. Safe to call twice.
+        """Releases this script's Lock, if it holds one, and closes the connection.
 
-        The Channels stay as they are: the Rig keeps them for the next script.
+        Safe to call twice. The Channels stay as they are: the Rig keeps them for the next
+        script. If someone took the Lock over, or releasing fails, `close()` logs a warning to
+        the `itch` logger instead of raising.
         """
-        self._connection.close()
+        try:
+            self._release_lock()
+        except ItchError as err:
+            _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.label, err)
+        finally:
+            self._connection.close()
 
     def __enter__(self) -> Self:
         return self
@@ -183,6 +229,76 @@ class Rig:
     def _read_channels(self) -> int:
         """The commanded state of all 16 Channels, bit 0 for CH1."""
         return self._connection.request(_wire.GetChannels(), _wire.GetChannelsReply).state
+
+    def _release_one(self) -> None:
+        """Releases one `RigLock`, and the Rig's Lock with the last."""
+        if self._locks == 0:  # `close()` released it already.
+            return
+        self._locks -= 1
+        if self._locks == 0:
+            self._send_release()
+
+    def _release_lock(self) -> None:
+        """Releases the Lock if any `RigLock` is live, making them all released."""
+        if self._locks == 0:
+            return
+        self._locks = 0
+        self._send_release()
+
+    def _send_release(self) -> None:
+        """Sends `ReleaseLock`.
+
+        A Takeover means it is already released, so that only logs a warning. A dropped
+        connection can't release it; reconnecting under the same Holder picks it back up.
+        """
+        try:
+            self._connection.request(_wire.ReleaseLock(self._holder), _wire.ReleaseLockReply)
+        except LockedError:
+            _LOGGER.warning(
+                "Rig %s was taken over before %s released its Lock.", self.label, self._holder
+            )
+        except DisconnectedError:
+            pass
+
+
+class RigLock:
+    """A Lock this script holds on a Rig. Get one from `rig.lock()`.
+
+    ```python
+    with rig.lock():
+        rig.set_channel(3, "on")
+    ```
+
+    Leaving the block, or calling `.release()`, releases it. The Rig stays Locked while
+    another `RigLock` on it is live, such as the one `Rig.connect()` took.
+    """
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        """Takes the function that releases the Lock. Use `rig.lock()` instead."""
+        self._release: Callable[[], None] | None = release
+        """`None` once released."""
+
+    def release(self) -> None:
+        """Releases the Lock. Safe to call twice.
+
+        Logs a warning to the `itch` logger instead of raising if someone took it over. Does
+        nothing if the connection dropped: the Rig keeps the Lock until the same Holder
+        reconnects and releases it.
+        """
+        if (release := self._release) is not None:
+            self._release = None
+            release()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.release()
 
 
 def list_rigs(*, browse_timeout: float = _mdns.BROWSE_TIMEOUT) -> list[RigInfo]:
