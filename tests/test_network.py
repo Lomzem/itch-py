@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import socket
 import time
 
 import pytest
@@ -178,6 +179,17 @@ def test_a_fifth_network_connection_fails_at_once_naming_the_likely_limit(
     assert str(raised.value) == (
         f"Rig at {own_sim.url} closed the connection before replying to Hello; it may already "
         "have 4 network connections."
+    )
+
+
+def test_a_refused_network_connection_names_the_likely_limit() -> None:
+    # A Rig's firmware stops listening while it has 4 network connections.
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        url = f"tcp://127.0.0.1:{listener.getsockname()[1]}"
+    with pytest.raises(ItchError) as raised:
+        Rig.connect(url)
+    assert str(raised.value) == (
+        f"Rig at {url} refused the connection; it may already have 4 network connections."
     )
 
 

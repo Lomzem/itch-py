@@ -21,13 +21,10 @@ from itch._errors import (
     ProtocolMismatchError,
     rig_error,
 )
-from itch._transport import Disconnected, TcpTransport, Transport
+from itch._transport import NETWORK_CONNECTIONS, Disconnected, TcpTransport, Transport
 
 REQUEST_TIMEOUT = 2.0
 """Seconds to wait for each reply."""
-
-NETWORK_CONNECTIONS = 4
-"""How many TCP connections a Rig serves at once, beside USB."""
 
 _LOG_DRAIN_TIMEOUT = 0.05
 """Seconds `close()` waits for Log Events still on their way."""
@@ -107,7 +104,7 @@ class Connection:
             except DisconnectedError as err:
                 if not isinstance(transport, TcpTransport):
                     raise
-                # A Rig refuses a fifth TCP connection by closing it, without saying why.
+                # The simulator refuses a fifth TCP connection by closing it, without saying why.
                 raise ItchError(
                     f"Rig at {transport.name} closed the connection before replying to Hello; "
                     f"it may already have {NETWORK_CONNECTIONS} network connections."

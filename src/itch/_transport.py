@@ -18,6 +18,9 @@ from itch._frame import FrameDecoder, encode_frame
 
 CONNECT_TIMEOUT = 5.0
 
+NETWORK_CONNECTIONS = 4
+"""How many TCP connections a Rig serves at once, beside USB."""
+
 
 class Disconnected(Exception):
     """The transport's connection closed or failed."""
@@ -80,6 +83,12 @@ class TcpTransport(StreamTransport):
         super().__init__(f"tcp://{host}:{port}")
         try:
             self._socket = socket.create_connection((host, port), CONNECT_TIMEOUT)
+        except ConnectionRefusedError as err:
+            # A Rig's firmware stops listening while all its connections are open.
+            raise ItchError(
+                f"Rig at {self.name} refused the connection; it may already have "
+                f"{NETWORK_CONNECTIONS} network connections."
+            ) from err
         except OSError as err:
             raise ItchError(f"Can't connect to {self.name}: {err}") from err
         self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

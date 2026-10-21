@@ -2,13 +2,12 @@
 
 import dataclasses
 import re
-import socket
 import warnings
 
 import pytest
 from scripted_rig import ACME_HELLO, ScriptedRig, answering
 
-from itch import DevelopmentBuildWarning, ItchError, ProtocolMismatchError, Rig
+from itch import DevelopmentBuildWarning, ProtocolMismatchError, Rig
 from itch._wire import Hello, OkResponse, Request, UnknownEvent
 
 # `Hello` result bodies from the conformance vectors of earlier protocols (itch v0.1.1 and
@@ -95,10 +94,3 @@ def test_close_is_safe_to_call_twice() -> None:
         rig.close()
         rig.close()
         assert peer.closed.wait(2)
-
-
-def test_fails_plainly_when_nothing_listens() -> None:
-    with socket.create_server(("127.0.0.1", 0)) as listener:
-        port = listener.getsockname()[1]
-    with pytest.raises(ItchError, match=f"tcp://127.0.0.1:{port}"):
-        Rig.connect(f"tcp://127.0.0.1:{port}")
