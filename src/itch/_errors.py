@@ -109,7 +109,7 @@ class ProfileError(ItchError):
 
 
 class BatchConflictError(ItchError):
-    """Fields in one batch disagree on a shared Channel."""
+    """Fields in one `dut.apply()` disagree on a shared Channel."""
 
 
 def rig_error(rig: str, request: str, code: int, detail: str) -> ItchError:

@@ -8,7 +8,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping
 from ipaddress import IPv4Address, IPv4Interface
 from types import TracebackType
-from typing import TYPE_CHECKING, Literal, Self, TypeVar, overload
+from typing import TYPE_CHECKING, Literal, NoReturn, Self, TypeVar, overload
 
 from itch import _mdns, _wire
 from itch._connection import Connection
@@ -35,6 +35,17 @@ P = TypeVar("P", bound="Profile")
 _LOGGER = logging.getLogger("itch")
 
 _NOT_UNICAST = "it must not be zero, 255.255.255.255 or multicast."
+
+REMOVED = {
+    "set_channel": "Use set(...) to turn Channels on, clear(...) to turn them off, or "
+    "write(set=[...], clear=[...]) for both in one write.",
+    "set_channels": "Use set(...) to turn Channels on, clear(...) to turn them off, or "
+    "write(set=[...], clear=[...]) for both in one write.",
+    "get_channel": "Use get(channel), which returns True when the Channel is on.",
+    "get_channels": "Use get_all() to read all 16 Channels, or get(channel) for one.",
+    "close": "Use disconnect().",
+}
+"""Methods removed in itch-py 0.3.0, and what to use instead."""
 
 
 class Rig:
@@ -299,33 +310,6 @@ class Rig:
         """The state of all 16 Channels, read from the Rig now in one request."""
         return ChannelState(self._read_channels())
 
-    def set_channel(self, ch: int, pos: Position) -> None:
-        """Turns Channel `ch` on or off."""
-        self.set_channels({ch: pos})
-
-    def set_channels(self, positions: Mapping[int, Position]) -> None:
-        """Turns the listed Channels on or off together, in one write, leaving the rest alone.
-
-        `positions` is `{ch: pos}`.
-        """
-        mask = values = 0
-        for channel, position in positions.items():
-            bit = _bit(channel)
-            mask |= bit
-            if _is_on(position):
-                values |= bit
-        self._write_channels(mask, values)
-
-    def get_channel(self, ch: int) -> Position:
-        """Returns whether the Rig commands Channel `ch` "on" or "off"."""
-        return self.get_channels([ch])[ch]
-
-    def get_channels(self, chs: Iterable[int] | None = None) -> dict[int, Position]:
-        """Returns `{ch: "on" | "off"}` for the Channels in `chs`, or all 16."""
-        wanted = {ch: _bit(ch) for ch in (CHANNELS if chs is None else chs)}
-        state = self._read_channels()
-        return {ch: "on" if state & bit else "off" for ch, bit in wanted.items()}
-
     def set_label(self, label: str) -> None:
         """Renames the Rig, at most 64 bytes of UTF-8.
 
@@ -434,10 +418,6 @@ class Rig:
         forget(self._connection.endpoint, self)
         self._disconnect()
 
-    def close(self) -> None:
-        """Does what `disconnect()` does."""
-        self.disconnect()
-
     def __enter__(self) -> Self:
         return self
 
@@ -451,6 +431,11 @@ class Rig:
 
     def __repr__(self) -> str:
         return f"<Rig {self.label} {self.hardware_id} firmware {self.firmware_version}>"
+
+    if not TYPE_CHECKING:
+        # Hidden from type checkers, so an editor still flags a removed or misspelt method.
+        def __getattr__(self, name: str) -> NoReturn:
+            raise missing(self, name, REMOVED)
 
     def _replaced(self) -> None:
         """Disconnects, because this process is connecting to the same Rig again."""
@@ -663,6 +648,19 @@ def _channels_named(bits: int) -> str:
     return f"Channel{'s' if len(channels) > 1 else ''} {', '.join(map(str, channels))}"
 
 
+def missing(obj: object, name: str, removed: Mapping[str, str]) -> AttributeError:
+    """The error for reading `obj.name`, which doesn't exist, naming its replacement if it was
+    one of the `removed` methods."""
+    if (instead := removed.get(name)) is None:
+        return AttributeError(
+            f"{type(obj).__name__!r} object has no attribute {name!r}", name=name, obj=obj
+        )
+    # `name=None` stops Python adding a "Did you mean" guess, such as set_all for set_channels.
+    return AttributeError(
+        f"{type(obj).__name__}.{name}() was removed in itch-py 0.3.0. {instead}", name=None
+    )
+
+
 def _checked_word(value: object, name: str) -> int:
     # `bool` is an `int`, but `apply(True)` is surely a mistake.
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= ALL_CHANNELS:
@@ -671,9 +669,3 @@ def _checked_word(value: object, name: str) -> int:
             "for CH1."
         )
     return value
-
-
-def _is_on(position: Position) -> bool:
-    if position not in ("on", "off"):
-        raise ValueError(f'{position!r} isn\'t a Channel position: use "on" or "off".')
-    return position == "on"
