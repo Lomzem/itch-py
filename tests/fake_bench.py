@@ -10,6 +10,7 @@ import dataclasses
 import errno
 import os
 import sys
+import threading
 from typing import Any
 
 import pytest
@@ -102,6 +103,7 @@ class _FakeSerial:
         self._target: FakePort | None = None
         self._decoder = FrameDecoder()
         self._out = bytearray()
+        self._replied = threading.Condition()
         self.port = port
         self.exclusive = settings.pop("exclusive", None)
         self.settings = settings
@@ -174,12 +176,17 @@ class _FakeSerial:
                     reply = OkResponse(request.request_id, ReleaseLockReply())
                 case other:
                     raise AssertionError(f"the fake bench can't answer {other}")
-            self._out += encode_frame(encode(reply))
+            with self._replied:
+                self._out += encode_frame(encode(reply))
+                self._replied.notify_all()
         return len(data)
 
     def read(self, size: int = 1) -> bytes:
-        data = bytes(self._out[:size])
-        del self._out[:size]
+        """Returns up to `size` bytes, waiting up to the read timeout for some, as pySerial does."""
+        with self._replied:
+            self._replied.wait_for(lambda: self._out, self.settings["timeout"])
+            data = bytes(self._out[:size])
+            del self._out[:size]
         return data
 
     def close(self) -> None:
