@@ -141,7 +141,8 @@ class Connection:
     def request(
         self, body: _wire.RequestBody, reply: type[_Reply], *, changes_network: bool = False
     ) -> _Reply:
-        """Sends `body` and returns its reply, sending it once more if the Rig stays silent.
+        """Sends `body` and returns its reply, sending it once more if the Rig stays silent,
+        unless the Rig has accepted a network change over TCP.
 
         Raises the `ItchError` for the Rig's error reply, `NotRespondingError` if it stays
         silent, `DisconnectedError` if the connection fails or has failed, and `ItchError` for
@@ -200,11 +201,14 @@ class Connection:
         reply: type[_Reply],
         on_reply: Callable[[], None] | None = None,
     ) -> _Reply:
-        """Sends `body` up to twice. Call it holding `_lock`.
+        """Sends `body` up to twice, or once after a network change. Call it holding `_lock`.
 
         `on_reply` runs on the reader thread as it takes the reply, before it reads on.
         """
-        for _ in range(2):
+        with self._state:
+            # A Rig silent since a network change has moved, so sending again only waits.
+            attempts = 1 if self._network_changed else 2
+        for _ in range(attempts):
             if (answer := self._attempt(body, reply, on_reply)) is not None:
                 return answer
         with self._state:

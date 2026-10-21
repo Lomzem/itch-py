@@ -11,7 +11,7 @@ from ipaddress import IPv4Address, IPv4Interface
 
 import pytest
 from conftest import RunningSim
-from scripted_rig import HangUp, after_connecting
+from scripted_rig import ACME_HELLO, HangUp, ScriptedRig, after_connecting
 
 from itch import (
     AddressMode,
@@ -25,11 +25,17 @@ from itch import (
 )
 from itch._cli import main
 from itch._wire import (
+    Hello,
+    Lock,
+    LockReply,
     Message,
     OkResponse,
+    ReleaseLock,
     Request,
     SetAddress,
     SetAddressReply,
+    SetLogLevel,
+    SetLogLevelReply,
     SetWifi,
     SetWifiReply,
 )
@@ -197,6 +203,39 @@ def test_a_rig_silent_after_a_network_change_has_disconnected(
         with caplog.at_level(logging.DEBUG, logger="itch"):
             rig.close()
     assert caplog.records == []
+
+
+def test_closing_a_rig_silent_after_a_network_change_tries_to_release_once_quietly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(_connection, "REQUEST_TIMEOUT", 0.2)
+    moved = False
+
+    def moving_after_the_change(request: Request) -> list[Message]:
+        nonlocal moved
+        if moved:  # The Rig is at its new address now.
+            return []
+        match request.body:
+            case Hello():
+                return [OkResponse(request.request_id, ACME_HELLO)]
+            case SetLogLevel():
+                return [OkResponse(request.request_id, SetLogLevelReply())]
+            case Lock():
+                return [OkResponse(request.request_id, LockReply())]
+            case _:
+                moved = True
+                return [OkResponse(request.request_id, SetAddressReply())]
+
+    with ScriptedRig(moving_after_the_change) as peer:
+        rig = Rig.connect(peer.url, holder="alice")
+        rig.set_address(IPv4Interface("192.0.2.10/24"))
+        with caplog.at_level(logging.DEBUG, logger="itch"):
+            rig.close()
+        assert peer.closed.wait(2)
+    assert caplog.records == []
+    assert [r.body for r in peer.requests if isinstance(r.body, ReleaseLock)] == [
+        ReleaseLock("alice")
+    ]
 
 
 def test_itch_wifi_set_asks_for_the_passphrase_and_wifi_clear_forgets_it(
