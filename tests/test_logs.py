@@ -9,12 +9,16 @@ from scripted_rig import ACME_HELLO, answering
 from itch import Rig
 from itch._connection import Connection
 from itch._transport import open_tcp
-from itch._wire import Hello, HelloReply, LogEvent, SetLogLevel
+from itch._wire import Hello, HelloReply, Lock, LogEvent, SetLogLevel
 
 
-def test_turns_rig_logs_off_right_after_hello() -> None:
-    with answering(ACME_HELLO) as peer, Rig.connect(peer.url):
-        assert [request.body for request in peer.requests] == [Hello(), SetLogLevel(0)]
+def test_turns_rig_logs_off_right_after_hello_then_locks() -> None:
+    with answering(ACME_HELLO) as peer, Rig.connect(peer.url, holder="qa@bench-pc"):
+        assert [request.body for request in peer.requests] == [
+            Hello(),
+            SetLogLevel(0),
+            Lock("qa@bench-pc", takeover=False),
+        ]
 
 
 @pytest.mark.parametrize(

@@ -46,7 +46,7 @@ def test_itch_label_renames_the_rig_and_leaves_it_unlocked(
 ) -> None:
     assert main(["label", own_sim.url, "bench3"]) == 0
     assert "bench3" in capsys.readouterr().out
-    with Rig.connect(own_sim.url) as rig:
+    with Rig.connect(own_sim.url, lock=False) as rig:
         assert rig.label == "bench3"
         assert rig.status().holder is None
 
