@@ -4,6 +4,7 @@ import dataclasses
 import getpass
 import io
 import logging
+import socket
 import sys
 from collections.abc import Callable, Iterator
 from datetime import timedelta
@@ -236,6 +237,27 @@ def test_closing_a_rig_silent_after_a_network_change_tries_to_release_once_quiet
     assert [r.body for r in peer.requests if isinstance(r.body, ReleaseLock)] == [
         ReleaseLock("alice")
     ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["wifi", "clear", "{url}"],
+        ["address", "dhcp", "{url}"],
+    ],
+    ids=["wifi", "address"],
+)
+def test_a_provisioning_command_whose_rig_drops_says_the_lock_stays_held(
+    command: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(getpass, "getuser", lambda: "qa")
+    monkeypatch.setattr(socket, "gethostname", lambda: "bench-pc")
+    with after_connecting(dropping_after_network_changes) as peer:
+        assert main([part.format(url=peer.url) for part in command]) == 0
+    assert capsys.readouterr().err == (
+        "itch: the connection dropped before the Lock was released, so Rig bench3 stays "
+        "Locked by qa@bench-pc until that Holder reconnects.\n"
+    )
 
 
 def test_itch_wifi_set_asks_for_the_passphrase_and_wifi_clear_forgets_it(

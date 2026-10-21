@@ -51,6 +51,8 @@ class Rig:
         """Held while `_locks` changes and its `Lock` or `ReleaseLock` is exchanged, so a release
         can't unlock the Rig just after another thread Locked it again. Re-entrant, for an
         `itch` log handler that Locks from the warning `_send_release()` logs."""
+        self._left_locked = False
+        """Set if the connection dropped before `ReleaseLock` could be sent."""
 
     @classmethod
     def connect(
@@ -355,7 +357,7 @@ class Rig:
                 "Rig %s was taken over before %s released its Lock.", self.label, self._holder
             )
         except DisconnectedError:
-            pass
+            self._left_locked = True
 
 
 class RigLock:
@@ -410,6 +412,13 @@ def list_rigs(*, browse_timeout: float = _mdns.BROWSE_TIMEOUT) -> list[RigInfo]:
     plugged in and on the network is listed once, as plugged in. Listing never Locks a Rig.
     """
     return rig_infos(browse_timeout)
+
+
+def left_locked(rig: Rig) -> bool:
+    """Whether `rig`'s connection dropped before its Lock could be released, so the Rig stays
+    Locked by its Holder until that Holder reconnects (ADR 0009). For the CLI, without making
+    it part of `Rig`'s public API."""
+    return rig._left_locked  # pyright: ignore[reportPrivateUsage]
 
 
 def _default_holder() -> str:
