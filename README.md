@@ -345,9 +345,25 @@ Each itch-py release is tested against one `itch` release: its `itch-sim` and it
 
 | itch-py | Tested with `itch` (sim and firmware) |
 | ------- | ------------------------------------- |
+| v0.3.0 | v0.3.0 |
 | v0.2.0 | v0.3.0 |
 | v0.1.1 | v0.1.1 |
 | v0.1.0 | v0.1.0 |
+
+### Upgrading to v0.3.0
+
+v0.3.0 breaks scripts written for v0.2.0. The protocol is unchanged, so it works with the same `itch` v0.3.0 sim and firmware. Each old call now raises an error naming its replacement:
+
+| v0.2.0 | v0.3.0 |
+| ------ | ------ |
+| `rig.set_channel(3, "on")` | `rig.set(3)` |
+| `rig.set_channels({1: "on", 3: "off"})` | `rig.write(set=[1], clear=[3])` |
+| `rig.get_channel(3) == "on"` | `rig.get(3)` |
+| `rig.get_channels()` | `rig.get_all()` |
+| `rig.clear()` | `rig.clear_all()` |
+| `rig.close()` | `rig.disconnect()` |
+| `dut = AcmeWidget(rig)` | `dut = Rig.connect("bench3", AcmeWidget)` |
+| `with dut.batch():` and one `.set()` per Field | `dut.apply(resolution="1080p", mode="night")` |
 
 ## Development
 

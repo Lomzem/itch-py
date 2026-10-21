@@ -49,6 +49,15 @@ def assigning_a_value(address: str) -> None:
     Rig.connect(address, AcmeWidget).mode = "night"  # pyright: ignore[reportAttributeAccessIssue]
 
 
+def removed_api_names(address: str) -> None:
+    rig = Rig.connect(address)
+    rig.set_channels({1: "on"})  # pyright: ignore[reportAttributeAccessIssue]
+    rig.get_channels()  # pyright: ignore[reportAttributeAccessIssue]
+    rig.close()  # pyright: ignore[reportAttributeAccessIssue]
+    dut = Rig.connect(address, AcmeWidget)
+    dut.batch()  # pyright: ignore[reportAttributeAccessIssue]
+
+
 class Mistakes(Profile):
     """Mistakes the editor flags while a Profile is written. Run, each raises `ProfileError`."""
 
