@@ -7,6 +7,7 @@ import time
 import pytest
 from conftest import RunningSim
 from scripted_rig import HangUp, ScriptedRig, after_connecting
+from tcp_client import other_client
 
 from itch import DisconnectedError, ItchError, NotRespondingError, Rig, _connection
 from itch._wire import (
@@ -109,7 +110,7 @@ def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
 def test_closing_ends_every_thread_the_connection_started(sim: str) -> None:
     before = set(threading.enumerate())
     with Rig.connect(sim, log_level=logging.DEBUG):
-        Rig.connect(sim).disconnect()  # A Log Event for the threads to handle.
+        other_client(sim).close()  # A Log Event for the threads to handle.
         started = set(threading.enumerate()) - before
         assert started
     assert [thread for thread in started if thread.is_alive()] == []
