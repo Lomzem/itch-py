@@ -8,14 +8,24 @@
 # "on" is a DIP switch's ON position (on most switches: pushed right, or towards "1").
 # "off" is the other side.
 #
+# A Field can't be named set, clear, write, apply, set_all, clear_all, get, get_all,
+# disconnect or rig, or start with "_": those belong to the DUT itself.
+#
 # Use it in a test script:
 #
-#     dut = AcmeWidget(rig)
+#     from itch import Rig
+#     from acme_widget import AcmeWidget
+#
+#     dut = Rig.connect("bench3", AcmeWidget)
 #     dut.resolution.set("1080p")
-#     with dut.batch():  # change several settings together, when the block ends
-#         dut.refresh.set("50hz")
-#         dut.mode.set("night")
+#     dut.apply(refresh="50hz", mode="night")  # change several settings in one write
 #     print(dut)  # every setting's current Value
+#     dut.disconnect()
+#
+# or, disconnecting when the block ends:
+#
+#     with Rig.connect("bench3", AcmeWidget) as dut:
+#         dut.resolution.set("1080p")
 #
 # The Acme Widget is a made-up DUT.
 
