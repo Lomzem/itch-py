@@ -15,7 +15,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import ClassVar, Self
+from typing import ClassVar, Self, TypedDict
 
 PROTOCOL = 3
 """Bumped on any message change. A Rig must report exactly this."""
@@ -405,10 +405,7 @@ class GetStatusReply:
         w.text(self.ssid, MAX_SSID)
         w.u8(self.link)
         w.ipv4(self.current_address)
-        w.u8(self.mode)
-        w.ipv4(self.address)
-        w.u8(self.prefix)
-        w.ipv4(self.gateway)
+        _write_addressing(w, self.mode, self.address, self.prefix, self.gateway)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
@@ -427,10 +424,7 @@ class GetStatusReply:
             ssid=r.text(MAX_SSID),
             link=r.u8(),
             current_address=r.ipv4(),
-            mode=r.mode(),
-            address=r.ipv4(),
-            prefix=r.u8(),
-            gateway=r.ipv4(),
+            **_read_addressing(r),
         )
         if status.link > LINK_CONNECTED:
             raise DecodeError(f"link is {status.link}, not 0 off, 1 joining or 2 connected")
@@ -440,7 +434,6 @@ class GetStatusReply:
             raise DecodeError("the link is up without Wi-Fi credentials")
         if (status.link == LINK_CONNECTED) != (status.current_address != _ZERO_ADDRESS):
             raise DecodeError("current_address disagrees with the link")
-        _check_addressing(status.mode, status.address, status.prefix, status.gateway)
         return status
 
 
@@ -668,22 +661,11 @@ class SetAddress:
 
     def encode(self, w: _Writer) -> None:
         w.text(self.holder, MAX_HOLDER)
-        w.u8(self.mode)
-        w.ipv4(self.address)
-        w.u8(self.prefix)
-        w.ipv4(self.gateway)
+        _write_addressing(w, self.mode, self.address, self.prefix, self.gateway)
 
     @classmethod
     def decode(cls, r: _Reader) -> Self:
-        address = cls(
-            holder=r.text(MAX_HOLDER),
-            mode=r.mode(),
-            address=r.ipv4(),
-            prefix=r.u8(),
-            gateway=r.ipv4(),
-        )
-        _check_addressing(address.mode, address.address, address.prefix, address.gateway)
-        return address
+        return cls(holder=r.text(MAX_HOLDER), **_read_addressing(r))
 
 
 @dataclass(frozen=True)
@@ -703,8 +685,26 @@ def is_unicast(address: bytes) -> bool:
     return address not in (_ZERO_ADDRESS, b"\xff" * 4) and not 224 <= address[0] <= 239
 
 
-def _check_addressing(mode: int, address: bytes, prefix: int, gateway: bytes) -> None:
-    """Raises `DecodeError` unless the fields are a configuration `SetAddress` could give."""
+class _Addressing(TypedDict):
+    """An address configuration, the `mode`, `address`, `prefix` and `gateway` fields that end
+    both `SetAddress` and the `GetStatus` result."""
+
+    mode: int
+    address: bytes
+    prefix: int
+    gateway: bytes
+
+
+def _write_addressing(w: _Writer, mode: int, address: bytes, prefix: int, gateway: bytes) -> None:
+    w.u8(mode)
+    w.ipv4(address)
+    w.u8(prefix)
+    w.ipv4(gateway)
+
+
+def _read_addressing(r: _Reader) -> _Addressing:
+    """Reads an address configuration. Raises `DecodeError` unless `SetAddress` could give it."""
+    mode, address, prefix, gateway = r.mode(), r.ipv4(), r.u8(), r.ipv4()
     if mode == ADDRESS_STATIC:
         valid = (
             is_unicast(address)
@@ -715,6 +715,7 @@ def _check_addressing(mode: int, address: bytes, prefix: int, gateway: bytes) ->
         valid = address == gateway == _ZERO_ADDRESS and prefix == 0
     if not valid:
         raise DecodeError("the address configuration isn't one SetAddress could give")
+    return _Addressing(mode=mode, address=address, prefix=prefix, gateway=gateway)
 
 
 # --- Envelope ----------------------------------------------------------------------------------
