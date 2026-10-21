@@ -5,6 +5,7 @@ import logging
 import socket
 import threading
 import warnings
+import weakref
 from collections.abc import Callable, Iterable, Mapping
 from ipaddress import IPv4Address, IPv4Interface
 from types import TracebackType
@@ -68,15 +69,11 @@ class Rig:
         self._holder = holder
         """Sent with every change, so a Rig Locked under this name accepts it."""
         self._label = connection.hello.label
-        self._locks = 0
-        """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
-        last releases the Rig's Lock."""
-        self._locking = threading.RLock()
-        """Held while `_locks` changes and its `Lock` or `ReleaseLock` is exchanged, so a release
-        can't unlock the Rig just after another thread Locked it again. Re-entrant, for an
-        `itch` log handler that Locks from the warning `_send_release()` logs."""
-        self._left_locked = False
-        """Set if the connection dropped before `ReleaseLock` could be sent."""
+        self._locks = _Locks(connection, holder)
+        self._disconnect = weakref.finalize(self, _disconnect, self._locks, connection)
+        """Releases the Lock and closes the connection, once: on `disconnect()`, when the script
+        drops the Rig without it, or at exit. It refers only to what it closes, not to the Rig,
+        which would keep the Rig alive."""
         claim(connection.endpoint, self)  # Disconnects an older Rig this process has there.
 
     @overload
@@ -152,12 +149,13 @@ class Rig:
         UTF-8. It defaults to `user@host`, cut short to 64 bytes. Two scripts run by the same
         user on the same computer share it, and so share the Lock.
 
-        Connecting Locks the Rig under `holder` until `disconnect()`, or until this script ends
-        normally or on an uncaught exception, so nobody else's script can change it, as
-        `rig.lock()` does. A killed script leaves its Lock, which `holder` picks back up on
-        connecting again. Pass `lock=False` to only look at a Rig someone else
-        has Locked: changes then succeed only while the Rig is unlocked. Pass `take_over=True`
-        to take the Lock from whoever holds it; their next change then raises `LockedError`.
+        Connecting Locks the Rig under `holder` until `disconnect()`, until the script no longer
+        refers to the Rig, or until it ends normally or on an uncaught exception, so nobody
+        else's script can change it, as `rig.lock()` does. A killed script leaves its Lock, which
+        `holder` picks back up on connecting again. Pass `lock=False` to only look at a Rig
+        someone else has Locked: changes then succeed only while the Rig is unlocked. Pass
+        `take_over=True` to take the Lock from whoever holds it; their next change then raises
+        `LockedError`.
 
         Raises `RigNotFoundError` or `AmbiguousRigError`, listing the Rigs found, if `name`
         doesn't pick out one Rig, and `ItchError` if the Rig that answers has another
@@ -231,9 +229,7 @@ class Rig:
         Raises `LockedError` if another Holder has Locked the Rig, unless `take_over` is true:
         that takes the Lock from them, and their next change raises `LockedError`.
         """
-        with self._locking:
-            self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
-            self._locks += 1
+        self._locks.take(take_over)
         return RigLock(self._release_one)
 
     def set(self, *channels: int) -> None:
@@ -365,8 +361,9 @@ class Rig:
         fallback to DHCP: a wrong static address strands the Rig's Wi-Fi until you fix it over
         USB. The Rig keeps the setting across reboots, and its Wi-Fi credentials.
 
-        Raises `ValueError`, sending nothing, if the address or a gateway is zero,
-        255.255.255.255 or multicast, or the prefix is /0.
+        Raises `ValueError`, sending nothing, if the address is zero, 255.255.255.255 or
+        multicast, the gateway is 255.255.255.255 or multicast, or the prefix is /0. A zero
+        gateway means none, as leaving it out does.
 
         Connected over the network, the Rig moves to the new address about a second after
         replying, which may drop the connection. This still returns, and the next call raises
@@ -412,8 +409,9 @@ class Rig:
         The Channels stay as they are: the Rig keeps them for the next script. Calling it again
         does nothing, and anything else then raises `DisconnectedError`. If someone took the
         Lock over, or releasing fails, it logs a warning to the `itch` logger instead of
-        raising. A script that ends without it, normally or on an uncaught exception,
-        disconnects as it exits.
+        raising. A Rig the script no longer refers to disconnects once Python frees it, and one
+        still connected as the script ends, normally or on an uncaught exception, disconnects as
+        it exits.
         """
         forget(self._connection.endpoint, self)
         self._disconnect()
@@ -439,15 +437,13 @@ class Rig:
 
     def _replaced(self) -> None:
         """Disconnects, because this process is connecting to the same Rig again."""
-        self._disconnect(replaced=True)
+        self._disconnect.detach()
+        _disconnect(self._locks, self._connection, replaced=True)
 
-    def _disconnect(self, *, replaced: bool = False) -> None:
-        try:
-            self._release_lock()
-        except ItchError as err:
-            _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.label, err)
-        finally:
-            self._connection.close(replaced=replaced)
+    def _refresh(self) -> None:
+        """Asks the Rig its Label again, since another connection may have renamed it."""
+        hello = self._connection.request(_wire.Hello(), _wire.HelloReply)
+        self._label = self._connection.name = hello.label
 
     def _write_channels(self, mask: int, values: int) -> None:
         """One Mask write: the Channels in `mask` take their bits from `values`."""
@@ -464,24 +460,53 @@ class Rig:
         return self._connection.request(_wire.GetChannels(), _wire.GetChannelsReply).state
 
     def _release_one(self) -> None:
+        """Releases one `RigLock`, and the Rig's Lock with the last. Through the Rig, so a live
+        `RigLock` keeps the Rig, and its Lock, alive."""
+        self._locks.release_one()
+
+
+class _Locks:
+    """The Locks a script holds on a Rig over one connection. Kept apart from the `Rig`, so they
+    can still be released once the script drops the Rig."""
+
+    def __init__(self, connection: Connection, holder: str) -> None:
+        self._connection = connection
+        self._holder = holder
+        self._live = 0
+        """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
+        last releases the Rig's Lock."""
+        self._locking = threading.RLock()
+        """Held while `_live` changes and its `Lock` or `ReleaseLock` is exchanged, so a release
+        can't unlock the Rig just after another thread Locked it again. Re-entrant, for an
+        `itch` log handler that Locks from the warning `_send_release()` logs."""
+        self.left_locked = False
+        """Set if the connection dropped before `ReleaseLock` could be sent."""
+
+    def take(self, take_over: bool) -> None:
+        """Locks the Rig, or picks the Lock up again, for one more `RigLock`."""
+        with self._locking:
+            self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
+            self._live += 1
+
+    def release_one(self) -> None:
         """Releases one `RigLock`, and the Rig's Lock with the last."""
         with self._locking:
-            if self._locks == 0:  # `disconnect()` released it already.
+            if self._live == 0:  # `disconnect()` released it already.
                 return
-            self._locks -= 1
-            if self._locks == 0:
+            self._live -= 1
+            if self._live == 0:
                 self._send_release()
 
-    def _release_lock(self) -> None:
+    def release_all(self) -> None:
         """Releases the Lock if any `RigLock` is live, making them all released.
 
         Not held while the connection closes, which waits for the log handlers, since one may be
         waiting to Lock.
         """
         with self._locking:
-            if self._locks == 0:
+            if self._live == 0:
                 return
-            self._locks = 0
+            self._live = 0
             self._send_release()
 
     def _send_release(self) -> None:
@@ -494,10 +519,22 @@ class Rig:
             self._connection.request(_wire.ReleaseLock(self._holder), _wire.ReleaseLockReply)
         except LockedError:
             _LOGGER.warning(
-                "Rig %s was taken over before %s released its Lock.", self.label, self._holder
+                "Rig %s was taken over before %s released its Lock.",
+                self._connection.name,
+                self._holder,
             )
         except DisconnectedError:
-            self._left_locked = True
+            self.left_locked = True
+
+
+def _disconnect(locks: _Locks, connection: Connection, *, replaced: bool = False) -> None:
+    """Releases the Lock if `locks` hold it, then closes `connection`. Safe to call twice."""
+    try:
+        locks.release_all()
+    except ItchError as err:
+        _LOGGER.warning("Couldn't release Rig %s's Lock: %s", connection.name, err)
+    finally:
+        connection.close(replaced=replaced)
 
 
 class ChannelState(int):
@@ -591,7 +628,7 @@ def left_locked(rig: Rig) -> bool:
     """Whether `rig`'s connection dropped before its Lock could be released, so the Rig stays
     Locked by its Holder until that Holder reconnects (ADR 0009). For the CLI, without making
     it part of `Rig`'s public API."""
-    return rig._left_locked  # pyright: ignore[reportPrivateUsage]
+    return rig._locks.left_locked  # pyright: ignore[reportPrivateUsage]
 
 
 def _default_holder() -> str:

@@ -2,14 +2,12 @@
 TCP address.
 
 Connecting to an endpoint again first disconnects the older Rig there, so a notebook cell
-that connects can run again. At exit, every Rig still connected is disconnected, releasing its
-Lock. Only weak references are kept, so a Rig dropped without disconnecting isn't kept alive.
+that connects can run again. Only weak references are kept, so a Rig dropped without
+disconnecting isn't kept alive: it disconnects itself as Python frees it, or at exit.
 """
 
 from __future__ import annotations
 
-import atexit
-import logging
 import os
 import socket
 import sys
@@ -35,8 +33,10 @@ class Connected(Protocol):
         """Disconnects, because this process connected to the same Rig again."""
         ...
 
+    def _refresh(self) -> None:
+        """Asks the Rig its Label again, since another connection may have renamed it."""
+        ...
 
-_LOGGER = logging.getLogger("itch")
 
 _connected: weakref.WeakValueDictionary[str, Connected] = weakref.WeakValueDictionary()
 
@@ -86,15 +86,3 @@ def forget(endpoint: str, rig: Connected) -> None:
     """Forgets `rig`, which has disconnected."""
     if _connected.get(endpoint) is rig:
         del _connected[endpoint]
-
-
-@atexit.register
-def _disconnect_all() -> None:
-    """Disconnects every Rig still connected as the interpreter exits, normally or after an
-    uncaught exception, releasing their Locks. A killed process can't, and its Holder picks the
-    Lock back up on reconnecting (ADR 0009)."""
-    for rig in list(_connected.values()):
-        try:
-            rig.disconnect()  # It forgets itself, and only logs if releasing fails.
-        except Exception:  # Keep going, so one Rig's bug doesn't leave the rest Locked.
-            _LOGGER.exception("Couldn't disconnect Rig %s at exit", rig.label)
