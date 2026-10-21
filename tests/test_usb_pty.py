@@ -170,6 +170,8 @@ def test_usb_label_reconnect_recovers_after_a_failed_serial_write(pty_rig: str) 
         with Rig.connect(old.label, holder="alice", browse_timeout=0) as new:
             assert new.status().holder == "alice"
             assert new.get_all() == 0x0001
+            with pytest.raises(DisconnectedError, match="connected to the same Rig again"):
+                old.get_all()
             old.disconnect()
             assert new.status().holder == "alice"
 
