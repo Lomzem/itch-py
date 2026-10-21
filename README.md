@@ -37,19 +37,41 @@ Rig.connect("COM4")  # or "/dev/ttyACM0", or a stable /dev/serial/by-id/... link
 
 However you name it, itch-py checks that the Rig that answers has the Hardware ID its USB port lists, so a port reshuffle can't send your script to another DUT.
 
-`itch list` shows what is plugged in. Rigs another script has open show as in use, and itch-py sends them nothing, so listing or connecting doesn't disturb a running test:
+`itch list` shows what is plugged in, then the Rigs on the network (see [Rigs on Wi-Fi](#rigs-on-wi-fi)). Rigs another script has open show as in use, and itch-py sends them nothing, so listing or connecting doesn't disturb a running test:
 
 ```sh
 $ itch list
-PORT          HARDWARE ID        LABEL   FIRMWARE
-/dev/ttyACM0  60:55:F9:C0:27:18  bench3  1.0.0
-/dev/ttyACM1  60:55:F9:C0:27:19  in use
-/dev/ttyACM2  60:55:F9:C0:27:1A  error   Rig /dev/ttyACM2 speaks protocol 1, but this itch-py speaks protocol 3. Have the dev update the Rig or itch-py.
+PORT                   HARDWARE ID        LABEL   FIRMWARE
+/dev/ttyACM0           60:55:F9:C0:27:18  bench3  1.0.0
+/dev/ttyACM1           60:55:F9:C0:27:19  in use
+/dev/ttyACM2           60:55:F9:C0:27:1A  error   Rig /dev/ttyACM2 speaks protocol 1, but this itch-py speaks protocol 3. Have the dev update the Rig or itch-py.
+tcp://192.0.2.11:7878  60:55:F9:C0:27:1B  bench5
 ```
 
 A free Rig that itch-py can't open or talk to shows its error in the list, and connecting by label skips it. Connecting to it by port or Hardware ID raises that error.
 
 From Python, `itch.list_rigs()` returns the same list. On Linux, "in use" means another itch-py script, or any program that locks the port as itch-py does; a serial monitor such as `screen` doesn't lock it.
+
+### Rigs on Wi-Fi
+
+A Rig that has joined Wi-Fi advertises itself on the network over mDNS (`_itch._tcp`), by its label and Hardware ID. When no Rig plugged in over USB has the label or Hardware ID you name, `Rig.connect()` browses the network for one, for 3 seconds by default:
+
+```python
+Rig.connect("bench5")  # USB first, then the network
+Rig.connect("bench5", browse_timeout=5)  # browse longer on a slow network
+```
+
+USB always wins: a Rig plugged in is used over USB even if it is also on the network, and `itch list` shows it once, as plugged in. `Rig.connect()` with no name never picks a Rig on the network. `itch list` and `list_rigs()` browse for the same 3 seconds (`list_rigs(browse_timeout=...)` changes it), and list Rigs on the network as they advertise themselves, without connecting to them, so their firmware is blank.
+
+After connecting, itch-py checks that the Rig's own `Hello` gives the label you asked for and the Hardware ID it advertised. That matters because mDNS can mislead: a label over 63 bytes is advertised cut to its first 63, and two Rigs can advertise the same label. If two Rigs on the network answer to one label, `Rig.connect()` raises `AmbiguousRigError` and lists both. itch-py collects every answer heard during the whole browse, but it can only report Rigs whose answers reach it in time, so it can't promise to notice a duplicate; the `Hello` check is the backstop. Give each Rig its own label.
+
+If mDNS is blocked or slow on your network, connect by address instead. This skips discovery entirely:
+
+```python
+Rig.connect("tcp://192.0.2.10:7878")
+```
+
+A Rig serves at most 4 network connections besides USB, and closes a fifth before answering. itch-py reports that straight away as "Rig at tcp://… closed the connection before replying to Hello; it may already have 4 network connections." Close a script you no longer need, or use USB.
 
 On Linux, your user needs access to the port: add yourself to the group that owns `/dev/ttyACM*` (`dialout` on Debian and Ubuntu, `uucp` on Arch), then log in again.
 

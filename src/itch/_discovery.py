@@ -1,4 +1,7 @@
-"""Finding Rigs plugged in over USB: picking one by name, and listing them."""
+"""Finding Rigs plugged in over USB or on the network: picking one by name, and listing them.
+
+A name is looked for over USB first. Only if no USB Rig has it does a lookup browse mDNS.
+"""
 
 from __future__ import annotations
 
@@ -6,36 +9,53 @@ import dataclasses
 import os
 import sys
 from collections.abc import Iterable
+from typing import Literal
 
+from itch import _mdns
 from itch._connection import Connection, same_hardware_id
 from itch._errors import AmbiguousRigError, ItchError, RigNotFoundError
+from itch._transport import TcpTransport
 from itch._usb import PortInUse, UsbPort, UsbTransport, usb_ports
 
 
 @dataclasses.dataclass(frozen=True)
 class RigInfo:
-    """A Rig plugged in over USB, as `list_rigs()` finds it."""
+    """A Rig plugged in over USB or advertised on the network, as `list_rigs()` finds it."""
 
     port: str
-    """Such as `COM4` or `/dev/ttyACM0`."""
+    """Where to reach it, for `Rig.connect()`: such as `COM4` or `/dev/ttyACM0` over USB, or
+    `tcp://192.0.2.10:7878` on the network."""
     hardware_id: str
     """Such as `60:55:F9:C0:27:18`."""
     label: str | None
-    """Such as `bench3`, or `None` if the Rig is in use or failed."""
+    """Such as `bench3`, or `None` if the Rig is in use or failed. On the network, the label
+    the Rig advertises, cut to 63 bytes if longer."""
     firmware_version: str | None
-    """Such as `1.0.0`, or `None` if the Rig is in use or failed."""
+    """Such as `1.0.0`, or `None` if the Rig is in use, failed or on the network."""
     error: str | None = None
     """Why itch-py couldn't ask a free Rig its label, such as a protocol mismatch."""
+    transport: Literal["usb", "tcp"] = "usb"
+    """How it was found: plugged in over USB, or advertised on the network over mDNS."""
 
     @property
     def in_use(self) -> bool:
-        """Whether another program has the Rig open, so itch-py couldn't ask its label."""
+        """Whether another program has the USB Rig open, so itch-py couldn't ask its label.
+
+        Always `False` on the network, where listing doesn't connect.
+        """
         return self.label is None and self.error is None
 
 
-def rig_infos() -> list[RigInfo]:
-    """The Rigs plugged in over USB, each opened briefly unless in use."""
-    return [_info(port) for port in usb_ports()]
+def rig_infos(browse_timeout: float) -> list[RigInfo]:
+    """The Rigs plugged in over USB, each opened briefly unless in use, then those advertised
+    on the network within `browse_timeout` seconds and not plugged in."""
+    usb = [_info(port) for port in usb_ports()]
+    network = [
+        rig
+        for rig in _network_infos(_mdns.browse(browse_timeout))
+        if not any(same_hardware_id(rig.hardware_id, plugged.hardware_id) for plugged in usb)
+    ]
+    return usb + sorted(network, key=lambda rig: (str(rig.label).casefold(), rig.hardware_id))
 
 
 def rig_table(rigs: Iterable[RigInfo]) -> list[str]:
@@ -53,8 +73,12 @@ def _row(rig: RigInfo) -> tuple[str, str, str, str]:
     return rig.port, rig.hardware_id, rig.label, rig.firmware_version or ""
 
 
-def find_rig(name: str | None, log_level: int | None) -> Connection:
-    """Connects to the USB Rig `name` picks: by port, then Hardware ID, then label."""
+def find_rig(name: str | None, log_level: int | None, browse_timeout: float) -> Connection:
+    """Connects to the Rig `name` picks: over USB by port, Hardware ID or label, then on the
+    network by Hardware ID or label, browsing for `browse_timeout` seconds.
+
+    With no `name`, connects to the only Rig plugged in, never one on the network.
+    """
     ports = usb_ports()
     if name is None:
         if len(ports) == 1:
@@ -76,10 +100,12 @@ def find_rig(name: str | None, log_level: int | None) -> Connection:
     for port in ports:
         if same_hardware_id(port.hardware_id, name):
             return _open(port, log_level)
-    return _find_label(ports, name, log_level)
+    return _find_label(ports, name, log_level, browse_timeout)
 
 
-def _find_label(ports: list[UsbPort], label: str, log_level: int | None) -> Connection:
+def _find_label(
+    ports: list[UsbPort], label: str, log_level: int | None, browse_timeout: float
+) -> Connection:
     """Connects to every free Rig to find the one labelled `label`, and closes the rest."""
     found: list[RigInfo] = []
     matches: list[Connection] = []
@@ -112,8 +138,15 @@ def _find_label(ports: list[UsbPort], label: str, log_level: int | None) -> Conn
                 [info for info in found if _same_label(info, label)],
             )
         )
+    adverts = _mdns.browse(browse_timeout)
+    if connection := _find_advert(adverts, label, log_level):
+        return connection
+    found += _network_infos(adverts)
     if not found:
-        raise RigNotFoundError(f"Rig {label!r} not found: no Rig is plugged in.")
+        raise RigNotFoundError(
+            f"Rig {label!r} not found: no Rig is plugged in, and none answered on the network "
+            f"within {browse_timeout:g} s."
+        )
     busy = [info.port for info in found if info.in_use]
     in_use = (
         f"; {len(busy)} {'Rig is' if len(busy) == 1 else 'Rigs are'} in use by another "
@@ -121,7 +154,74 @@ def _find_label(ports: list[UsbPort], label: str, log_level: int | None) -> Conn
         if busy
         else ""
     )
-    raise RigNotFoundError(_with_table(f"Rig {label!r} not found{in_use}. Rigs found:", found))
+    raise RigNotFoundError(
+        _with_table(
+            f"Rig {label!r} not found over USB or on the network{in_use}. Rigs found:", found
+        )
+    )
+
+
+def _find_advert(
+    adverts: list[_mdns.Advert], name: str, log_level: int | None
+) -> Connection | None:
+    """Connects to the one Rig advertising Hardware ID or label `name`, or `None` if none does."""
+    by_label = [advert for advert in adverts if _advertises_label(advert, name)]
+    by_hardware_id = [advert for advert in adverts if same_hardware_id(advert.hardware_id, name)]
+    matches = by_hardware_id or by_label
+    if not matches:
+        return None
+    if len(rigs := _network_infos(matches)) > 1:
+        raise AmbiguousRigError(
+            _with_table(
+                f"{len(rigs)} Rigs on the network are labelled {name!r}; pass Rig.connect() the "
+                "Hardware ID or tcp://host:port of one:",
+                rigs,
+            )
+        )
+    advert = matches[0]
+    connection = Connection.open(TcpTransport(advert.address, advert.port))
+    try:
+        _check_identity(connection, advert, None if by_hardware_id else name)
+        if log_level is not None:
+            connection.set_log_level(log_level)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def _check_identity(connection: Connection, advert: _mdns.Advert, label: str | None) -> None:
+    """Checks the Rig's `Hello` names the Rig `advert` advertises, labelled `label` in full.
+
+    The instance name holds only the first 63 bytes of a Label, and two Rigs may advertise the
+    same one, so the TXT a lookup heard may not be this Rig's.
+    """
+    if not same_hardware_id(connection.hardware_id, advert.hardware_id):
+        raise ItchError(
+            f"The Rig at {advert.url} says its Hardware ID is {connection.hardware_id}, but it "
+            f"advertises {advert.hardware_id.upper()}. Another Rig on the network may advertise "
+            "the same label; pass Rig.connect() a Hardware ID or tcp://host:port."
+        )
+    if label is not None and connection.hello.label.casefold() != label.casefold():
+        raise RigNotFoundError(
+            f"Rig {label!r} not found: the Rig advertising it at {advert.url} is labelled "
+            f"{connection.hello.label!r}."
+        )
+
+
+def _network_infos(adverts: Iterable[_mdns.Advert]) -> list[RigInfo]:
+    """One `RigInfo` per Hardware ID among `adverts`."""
+    rigs: dict[str, RigInfo] = {}
+    for advert in adverts:
+        rigs.setdefault(
+            advert.hardware_id.upper(),
+            RigInfo(advert.url, advert.hardware_id.upper(), advert.instance, None, transport="tcp"),
+        )
+    return list(rigs.values())
+
+
+def _advertises_label(advert: _mdns.Advert, label: str) -> bool:
+    return advert.instance.casefold() == _mdns.advertised(label).casefold()
 
 
 def _open(port: UsbPort, log_level: int | None) -> Connection:

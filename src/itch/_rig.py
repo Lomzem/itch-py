@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Mapping
 from types import TracebackType
 from typing import Literal, Self
 
-from itch import _wire
+from itch import _mdns, _wire
 from itch._connection import Connection
 from itch._discovery import RigInfo, find_rig, rig_infos
 from itch._errors import DevelopmentBuildWarning, DisconnectedError, ItchError, LockedError
@@ -53,13 +53,16 @@ class Rig:
         lock: bool = True,
         take_over: bool = False,
         log_level: int | None = None,
+        browse_timeout: float = _mdns.BROWSE_TIMEOUT,
     ) -> Self:
         """Connects to a Rig and checks it speaks this itch-py's protocol.
 
         `name` picks a Rig plugged in over USB by its port (`COM4`, `/dev/ttyACM0`), its
         Hardware ID (`60:55:F9:C0:27:18`) or its label (`bench3`), ignoring case. Leave it out
         when only one Rig is plugged in. A label lookup skips Rigs other programs have open.
-        `tcp://host:port` reaches `itch-sim` or a Rig on the network.
+        If no USB Rig has the Hardware ID or label, itch-py browses the network over mDNS for
+        `browse_timeout` seconds, 3 by default, and connects to the Rig advertising it.
+        `tcp://host:port` reaches `itch-sim` or a Rig on the network without browsing.
 
         `holder` names this script to colleagues in every change it makes, 1 to 64 bytes of
         UTF-8. It defaults to `user@host`, cut short to 64 bytes. Two scripts run by the same
@@ -71,10 +74,11 @@ class Rig:
         to take the Lock from whoever holds it; their next change then raises `LockedError`.
 
         Raises `RigNotFoundError` or `AmbiguousRigError`, listing the Rigs found, if `name`
-        doesn't pick out one Rig, and `ItchError` if the USB Rig that answers has another
-        Hardware ID than its port lists, or if `holder` is left out and the user or host name
-        can't be read. Raises `LockedError` if another Holder has Locked the Rig. Raises
-        `ValueError` if `holder` is empty or over 64 bytes. Warns with
+        doesn't pick out one Rig, and `ItchError` if the Rig that answers has another
+        Hardware ID than its USB port lists or it advertises, if a Rig on the network refuses
+        the connection, or if `holder` is left out and the user or host name can't be read.
+        Raises `LockedError` if another Holder has Locked the Rig. Raises `ValueError` if
+        `holder` is empty or over 64 bytes. Warns with
         `DevelopmentBuildWarning` if the Rig runs a development build.
 
         The Rig's own log messages are off unless you pass `log_level`, such as
@@ -86,7 +90,7 @@ class Rig:
         if name is not None and name.startswith("tcp://"):
             rig = cls(Connection.open(open_tcp(name), log_level=log_level), holder)
         else:
-            rig = cls(find_rig(name, log_level), holder)
+            rig = cls(find_rig(name, log_level, browse_timeout), holder)
         try:
             if lock:
                 rig.lock(take_over=take_over)  # A RigLock that only `close()` releases.
@@ -297,14 +301,18 @@ class RigLock:
         self.release()
 
 
-def list_rigs() -> list[RigInfo]:
-    """The Rigs plugged in over USB.
+def list_rigs(*, browse_timeout: float = _mdns.BROWSE_TIMEOUT) -> list[RigInfo]:
+    """The Rigs plugged in over USB, then those on the network.
 
-    Opens each free Rig briefly to ask its label and firmware version. Rigs other programs
+    Opens each free USB Rig briefly to ask its label and firmware version. Rigs other programs
     have open are listed as in use, without disturbing them. A free Rig that fails to answer
     is listed with its `error`.
+
+    Rigs on the network are those advertised over mDNS within `browse_timeout` seconds, 3 by
+    default, listed as they advertise themselves, without connecting to them. A Rig both
+    plugged in and on the network is listed once, as plugged in. Listing never Locks a Rig.
     """
-    return rig_infos()
+    return rig_infos(browse_timeout)
 
 
 def _default_holder() -> str:
