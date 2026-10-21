@@ -14,7 +14,8 @@ from typing import Protocol
 
 from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, ServiceListener, Zeroconf
 
-# zeroconf leaves its record types out of `__all__`, so import them from where they live.
+# zeroconf leaves its record types out of `__all__`, so import them from where they live. That
+# module is private, so pyproject.toml keeps zeroconf below 0.152.
 from zeroconf._dns import DNSAddress, DNSService, DNSText
 
 SERVICE = "_itch._tcp.local."

@@ -50,7 +50,7 @@ dev = [
 requires-dist = [
     { name = "pyserial", specifier = ">=3.5" },
     { name = "typing-extensions" },
-    { name = "zeroconf", specifier = ">=0.151.5" },
+    { name = "zeroconf", specifier = ">=0.151.5,<0.152" },
 ]
 
 [package.metadata.requires-dev]
