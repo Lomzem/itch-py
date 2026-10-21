@@ -157,6 +157,41 @@ itch label itch-C02718 bench3
 
 `itch label` takes the same names as `Rig.connect()`, including a port or `tcp://host:port`. It Locks the Rig while it renames it, so it fails with the Holder's name if someone else holds the Lock. `itch list` never Locks.
 
+## Put a Rig on Wi-Fi
+
+A Rig joins Wi-Fi once you give it credentials, then advertises itself on the network (see [Rigs on Wi-Fi](#rigs-on-wi-fi)). It keeps them across reboots and never reports the passphrase:
+
+```python
+rig.set_wifi("ExampleRigNet", "example-passphrase")
+print(rig.status().link)  # Link.CONNECTED once it has joined
+rig.clear_wifi()  # back to USB only
+```
+
+The SSID is 1 to 32 bytes and the passphrase 8 to 63; anything else raises `ValueError` before itch-py sends it. By default the Rig takes its address from DHCP. To give it a static address, with its prefix and an optional gateway:
+
+```python
+from ipaddress import IPv4Address, IPv4Interface
+
+rig.set_address(IPv4Interface("192.0.2.10/24"), gateway=IPv4Address("192.0.2.1"))
+rig.use_dhcp()  # back to DHCP
+```
+
+The Rig applies exactly what it is told, with no conflict check and no fallback to DHCP. A wrong static address strands the Rig's Wi-Fi until you fix it over USB. itch-py refuses a zero, broadcast or multicast address or gateway, and a /0 prefix, but can't tell whether the address suits your network.
+
+Or from the command line, which Locks the Rig for each command:
+
+```sh
+itch wifi set bench3 ExampleRigNet  # asks for the passphrase without echoing it
+printf '%s\n' "$PASSPHRASE" | itch wifi set --passphrase-stdin bench3 ExampleRigNet
+itch wifi clear bench3
+itch address static bench3 192.0.2.10/24 --gateway 192.0.2.1
+itch address dhcp bench3
+```
+
+These changes need the Lock like any other, so they raise `LockedError` while someone else holds it, and `StorageFaultError` if the Rig couldn't save them, keeping the old setting.
+
+Changing Wi-Fi or the address over the network can cut you off: the Rig leaves and rejoins Wi-Fi after `set_wifi()` or `clear_wifi()`, and moves to its new address about a second after `set_address()` or `use_dhcp()`. The call still succeeds, `close()` stays quiet, and the next call on that connection raises `DisconnectedError` saying to reconnect after the network change. Over USB nothing drops, so provisioning over USB is simplest.
+
 ## Drive a DUT with a Profile
 
 A Profile names a DUT model's settings, so a script says `"1080p"` instead of which Channels to turn on. Write one as a short class. Each Field lists the Channels it uses, and each Value lists one `"on"`/`"off"` per Channel, in the same order:

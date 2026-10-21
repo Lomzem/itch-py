@@ -5,6 +5,7 @@ import logging
 import socket
 import warnings
 from collections.abc import Callable, Iterable, Mapping
+from ipaddress import IPv4Address, IPv4Interface
 from types import TracebackType
 from typing import Literal, Self
 
@@ -22,6 +23,8 @@ Position = Literal["on", "off"]
 """A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
 
 _LOGGER = logging.getLogger("itch")
+
+_NOT_UNICAST = "it must not be zero, 255.255.255.255 or multicast."
 
 
 class Rig:
@@ -189,6 +192,83 @@ class Rig:
         reply = self._connection.request(request, _wire.SetLabelReply)
         self._label = self._connection.name = reply.label
 
+    def set_wifi(self, ssid: str, passphrase: str) -> None:
+        """Gives the Rig credentials for the Wi-Fi network `ssid`, replacing any it had.
+
+        `ssid` is 1 to 32 bytes of UTF-8 and `passphrase` 8 to 63; if not, `ValueError` says
+        which is wrong and nothing is sent. The Rig keeps the credentials across reboots and
+        never reports the passphrase. It then leaves Wi-Fi and joins `ssid`.
+
+        Connected over the network, the Rig may drop the connection as it rejoins. This still
+        returns, and the next call raises `DisconnectedError`: reconnect after the network
+        change. Raises `LockedError` if another Holder has Locked the Rig, and
+        `StorageFaultError`, keeping the old credentials, if the Rig couldn't save them.
+        """
+        if not 1 <= (size := len(ssid.encode())) <= _wire.MAX_SSID:
+            raise ValueError(
+                f"The SSID {ssid!r} is {size} bytes, but it must be 1 to {_wire.MAX_SSID}."
+            )
+        if not _wire.MIN_PASSPHRASE <= (size := len(passphrase.encode())) <= _wire.MAX_PASSPHRASE:
+            raise ValueError(
+                f"The passphrase is {size} bytes, but it must be {_wire.MIN_PASSPHRASE} to "
+                f"{_wire.MAX_PASSPHRASE}."
+            )
+        self._change_network(_wire.SetWifi(self._holder, ssid, passphrase), _wire.SetWifiReply)
+
+    def clear_wifi(self) -> None:
+        """Forgets the Rig's Wi-Fi credentials, so it leaves Wi-Fi and works over USB alone.
+
+        Connected over the network, the Rig drops the connection. This still returns, and the
+        next call raises `DisconnectedError`. Raises `LockedError` if another Holder has Locked
+        the Rig, and `StorageFaultError`, keeping the old credentials, if the Rig couldn't
+        forget them.
+        """
+        self._change_network(_wire.SetWifi(self._holder, "", ""), _wire.SetWifiReply)
+
+    def set_address(self, address: IPv4Interface, gateway: IPv4Address | None = None) -> None:
+        """Gives the Rig a static IPv4 address on Wi-Fi instead of taking one from DHCP.
+
+        `address` carries its prefix, such as `IPv4Interface("192.0.2.10/24")`, and `gateway`
+        is optional. The Rig applies exactly what it is told, with no conflict check and no
+        fallback to DHCP: a wrong static address strands the Rig's Wi-Fi until you fix it over
+        USB. The Rig keeps the setting across reboots, and its Wi-Fi credentials.
+
+        Raises `ValueError`, sending nothing, if the address or a gateway is zero,
+        255.255.255.255 or multicast, or the prefix is /0.
+
+        Connected over the network, the Rig moves to the new address about a second after
+        replying, which may drop the connection. This still returns, and the next call raises
+        `DisconnectedError`: reconnect after the network change. Raises `LockedError` if another
+        Holder has Locked the Rig, and `StorageFaultError`, keeping the old setting, if the Rig
+        couldn't save it.
+        """
+        if not _wire.is_unicast(address.ip.packed):
+            raise ValueError(f"{address.ip} can't be the Rig's address: {_NOT_UNICAST}")
+        if address.network.prefixlen == 0:
+            raise ValueError("The prefix /0 is too short: it must be 1 to 32, such as /24.")
+        packed_gateway = bytes(4) if gateway is None else gateway.packed  # Zero is no gateway.
+        if any(packed_gateway) and not _wire.is_unicast(packed_gateway):
+            raise ValueError(f"{gateway} can't be the gateway: {_NOT_UNICAST}")
+        request = _wire.SetAddress(
+            self._holder,
+            _wire.ADDRESS_STATIC,
+            address.ip.packed,
+            address.network.prefixlen,
+            packed_gateway,
+        )
+        self._change_network(request, _wire.SetAddressReply)
+
+    def use_dhcp(self) -> None:
+        """Has the Rig take its IPv4 address on Wi-Fi from DHCP, the default.
+
+        Connected over the network, the Rig may move to a new address, dropping the
+        connection. This still returns, and the next call raises `DisconnectedError`: reconnect
+        after the network change. Raises `LockedError` if another Holder has Locked the Rig,
+        and `StorageFaultError`, keeping the old setting, if the Rig couldn't save it.
+        """
+        request = _wire.SetAddress(self._holder, _wire.ADDRESS_DHCP, bytes(4), 0, bytes(4))
+        self._change_network(request, _wire.SetAddressReply)
+
     def status(self) -> Status:
         """Returns the Rig's health since boot, who holds its Lock, and its network."""
         return from_reply(self._connection.request(_wire.GetStatus(), _wire.GetStatusReply))
@@ -225,6 +305,11 @@ class Rig:
         """One Mask write: the Channels in `mask` take their bits from `values`."""
         request = _wire.WriteChannels(self._holder, mask, values)
         self._connection.request(request, _wire.WriteChannelsReply)
+
+    def _change_network(self, body: _wire.RequestBody, reply: type[_wire.ReplyBody]) -> None:
+        """Sends a request that changes the Rig's network settings, after which the connection
+        may end."""
+        self._connection.request(body, reply, changes_network=True)
 
     def _read_channels(self) -> int:
         """The commanded state of all 16 Channels, bit 0 for CH1."""

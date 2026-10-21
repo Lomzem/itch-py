@@ -42,13 +42,27 @@ class NotRespondingError(ItchError):
 
 
 class DisconnectedError(ItchError):
-    """The connection to the Rig closed, as after an unplug or a reboot. itch-py doesn't reconnect.
+    """The connection to the Rig closed, as after an unplug, a reboot or a Wi-Fi drop.
 
-    A reboot turns every Channel off, so the script must start again.
+    itch-py doesn't reconnect. Connecting again under the same Holder picks the Lock back up. A
+    reboot turns every Channel off, so check them, or run the script again.
+
+    After the Rig accepts new Wi-Fi or address settings over the network, the connection is
+    expected to end, and the message says to reconnect after the network change.
     """
 
-    def __init__(self) -> None:
-        super().__init__("Rig disconnected; run the script again.")
+    def __init__(self, rig: str, *, network_changed: bool = False) -> None:
+        if network_changed:
+            message = (
+                f"Rig {rig} disconnected after its network settings changed, as expected; "
+                "reconnect after the network change."
+            )
+        else:
+            message = (
+                f"Rig {rig} disconnected; reconnect, or run the script again. The same Holder "
+                "picks its Lock back up."
+            )
+        super().__init__(message)
 
 
 class HardwareFaultError(ItchError):

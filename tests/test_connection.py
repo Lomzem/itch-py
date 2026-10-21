@@ -68,7 +68,10 @@ def test_a_dropped_connection_fails_every_later_call_without_reconnecting(
         for _ in range(2):
             with pytest.raises(DisconnectedError) as raised:
                 rig.get_channels()
-            assert str(raised.value) == "Rig disconnected; run the script again."
+            assert str(raised.value) == (
+                "Rig itch-514D01 disconnected; reconnect, or run the script again. "
+                "The same Holder picks its Lock back up."
+            )
 
 
 def test_a_connection_dropped_before_the_reply_fails_that_call_at_once_and_every_later_one(
