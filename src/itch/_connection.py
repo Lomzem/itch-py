@@ -60,6 +60,10 @@ class Connection:
         """Why the connection ended, kept so every later request fails the same way."""
         self._closing = False
         """Set once `close()` starts."""
+        self._closed_here = False
+        """Set if `close()` ended the connection, rather than the Rig or the transport."""
+        self._replaced = False
+        """Set if `close()` was because this process connected to the same Rig again."""
         self._network_changed = False
         """Set once the Rig accepts a network change over TCP, after which it may drop the
         connection or go silent as it moves."""
@@ -121,6 +125,12 @@ class Connection:
         return connection
 
     @property
+    def endpoint(self) -> str:
+        """Where the Rig is reached, the same however it was named, such as `/dev/ttyACM0` or
+        `tcp://127.0.0.1:4000`."""
+        return self._transport.endpoint
+
+    @property
     def hardware_id(self) -> str:
         """The Hardware ID from the Rig's `Hello`, such as `60:55:F9:C0:27:18`."""
         return ":".join(f"{byte:02X}" for byte in self.hello.hardware_id)
@@ -158,12 +168,15 @@ class Connection:
         with self._lock:
             return self._exchange(body, reply, on_reply)
 
-    def close(self) -> None:
+    def close(self, *, replaced: bool = False) -> None:
         """Forwards the Log Events still on their way, then closes. Safe to call twice.
 
         Stops and joins the reader and the dispatcher, unless called from one of them.
+        `replaced` says it closes because this process connected to the same Rig again, which
+        later requests then say, even if the connection had already dropped.
         """
         with self._state:
+            self._replaced = self._replaced or replaced
             if self._closing:
                 return
             self._closing = True
@@ -179,6 +192,7 @@ class Connection:
             with self._state:
                 if self._disconnect is None:
                     self._disconnect = Disconnected("closed")
+                    self._closed_here = True
                 self._state.notify_all()
             self._transport.stop()  # Wakes the reader.
             self._join(self._reader)
@@ -254,7 +268,10 @@ class Connection:
         """Raises `DisconnectedError` once the connection has ended. Call it holding `_state`."""
         if self._disconnect is not None:
             raise DisconnectedError(
-                self.name, network_changed=self._network_changed
+                self.name,
+                network_changed=self._network_changed,
+                closed=self._closed_here,
+                replaced=self._replaced,
             ) from self._disconnect
 
     def _mark_network_changed(self) -> None:

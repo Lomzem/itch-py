@@ -13,6 +13,7 @@ from collections import deque
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from itch._endpoints import release, tcp_endpoint, tcp_endpoints
 from itch._errors import ItchError
 from itch._frame import FrameDecoder, encode_frame
 
@@ -33,6 +34,9 @@ class Disconnected(Exception):
 class Transport(Protocol):
     name: str
     """How the user reached the Rig, such as `tcp://127.0.0.1:4000`."""
+    endpoint: str
+    """Where the Rig is reached, the same however the user named it, such as
+    `tcp://127.0.0.1:4000` for `tcp://localhost:4000`. This process connects one Rig to each."""
 
     def send(self, payload: bytes) -> None:
         """Sends one payload. Raises `Disconnected`."""
@@ -108,6 +112,7 @@ class TcpTransport(StreamTransport):
             ) from err
         except OSError as err:
             raise ItchError(f"Can't connect to {self.name}: {err}") from err
+        self.endpoint = tcp_endpoint(self._socket.getpeername())
         self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._socket.settimeout(_STOP_BACKSTOP)
 
@@ -137,8 +142,10 @@ class TcpTransport(StreamTransport):
 
 
 def open_tcp(name: str) -> TcpTransport:
-    """Opens a `tcp://host:port` name."""
+    """Opens a `tcp://host:port` name, first disconnecting a Rig this process has connected at
+    the address it resolves to."""
     url = urlsplit(name)
     if url.hostname is None or url.port is None or url.path not in ("", "/"):
         raise ValueError(f"{name!r} isn't a tcp://host:port name.")
+    release(*tcp_endpoints(url.hostname, url.port))
     return TcpTransport(url.hostname, url.port)

@@ -11,6 +11,7 @@ from conftest import RunningSim
 from fake_bench import FakeBench
 from fake_network import FakeNetwork
 from scripted_rig import ACME_HELLO, answering
+from tcp_client import other_client
 from zeroconf import ServiceInfo
 from zeroconf._cache import DNSCache
 from zeroconf._dns import DNSAddress, DNSRecord, DNSService, DNSText
@@ -174,7 +175,7 @@ def test_a_fifth_network_connection_fails_at_once_naming_the_likely_limit(
 ) -> None:
     with contextlib.ExitStack() as rigs:
         for _ in range(4):
-            rigs.enter_context(Rig.connect(own_sim.url))
+            rigs.enter_context(other_client(own_sim.url))
         started = time.monotonic()
         with pytest.raises(ItchError) as raised:
             Rig.connect(own_sim.url)

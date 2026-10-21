@@ -7,14 +7,52 @@ import ast
 import difflib
 import inspect
 import textwrap
-from collections.abc import Generator, Sequence
-from contextlib import contextmanager
-from typing import Any, Generic, LiteralString, Never, NoReturn, TypeVar, cast, overload
+from collections.abc import Iterable, Sequence
+from types import TracebackType
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    LiteralString,
+    Never,
+    NoReturn,
+    Self,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from itch._errors import BatchConflictError, ItchError, ProfileError
-from itch._rig import CHANNELS, Position, Rig
+from itch._rig import ALL_CHANNELS, CHANNELS, REMOVED, ChannelState, Position, Rig, missing
 
 V = TypeVar("V", bound=LiteralString)
+P = TypeVar("P", bound="Profile")
+
+_NO_STATE: Any = object()
+"""`Profile.apply()`'s state when it is given Fields instead."""
+
+RESERVED = frozenset(
+    (
+        "set",
+        "clear",
+        "write",
+        "apply",
+        "set_all",
+        "clear_all",
+        "get",
+        "get_all",
+        "disconnect",
+        "rig",
+    )
+)
+"""The names a DUT keeps for itself, so no Field can take them. Frozen, as is a DUT's surface:
+new Rig features go on `Rig` only, so a Profile that loads today keeps loading (ADR 0001)."""
+
+REMOVED_FROM_DUT = {
+    **REMOVED,
+    "batch": "Use dut.apply(field=value, ...) to set several Fields in one write.",
+}
+"""DUT methods removed in itch-py 0.3.0, and what to use instead. Fields may take these names."""
 
 
 class Alias:
@@ -259,7 +297,11 @@ class Field(Generic[V]):
 
     def __set__(self, dut: Profile, value: Never) -> NoReturn:
         # Without this, `dut.mode = "cinema"` would quietly hide the Field and change nothing.
-        raise AttributeError(f'Use dut.{self.name}.set("{value}") to change {self.name}.')
+        shown = f'"{value}"' if isinstance(cast(object, value), str) else "..."
+        raise AttributeError(
+            f"{self.name} is a Field: change it with dut.apply({self.name}={shown}) or "
+            f"dut.{self.name}.set({shown})."
+        )
 
 
 class FieldOnRig(Generic[V]):
@@ -323,6 +365,11 @@ class Encoding(Generic[V]):
         return self._selection.describe()
 
 
+Setting = str | tuple[str, int] | Encoding[Any]
+"""What `dut.apply()` takes for each Field: a Value or alias, a `(Value, number)` tuple, or an
+`Encoding` of that Field."""
+
+
 class _Selection:
     """One Encoding of one Value of a Field, with the Channel bits it sets."""
 
@@ -354,70 +401,215 @@ class _Selection:
 
 
 class Profile:
-    """Base class of a DUT model's Profile. Subclass it and declare each Field with `field()`."""
+    """Base class of a DUT model's Profile. Subclass it and declare each Field with `field()`.
+
+    `Rig.connect("bench3", AcmeWidget)` returns a DUT: an `AcmeWidget` that drives its Fields,
+    as `dut.mode.set("night")`, and its Rig's Channels with the same verbs as a `Rig`, as
+    `dut.set(1, 5)`. Rig administration, such as `dut.rig.status()`, stays on `dut.rig`.
+
+    ```python
+    dut = Rig.connect("bench3", AcmeWidget)
+    dut.mode.set("night")
+    dut.set(1, 5)
+    dut.disconnect()
+
+    with Rig.connect("bench3", AcmeWidget) as dut:  # Leaving the block disconnects.
+        dut.mode.set("night")
+    ```
+
+    A DUT's surface is frozen: the eight Channel verbs, `disconnect`, `rig` and its Fields, and
+    nothing new as `Rig` gains features (ADR 0001). A Field can't be named `set`, `clear`,
+    `write`, `apply`, `set_all`, `clear_all`, `get`, `get_all`, `disconnect` or `rig`, or
+    start with `_`, and the list never grows, so a Profile that loads today keeps loading.
+    """
 
     _fields: dict[str, Field[Any]]
 
     def __init_subclass__(cls) -> None:
         own: dict[str, Field[Any]] = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
+        _check_names(own)
         _check_repeated_values(cls, own)
         for f in own.values():
             f._check()
         cls._fields = {**getattr(super(cls, cls), "_fields", {}), **own}
 
-    def __init__(self, rig: Rig) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        name = type(self).__name__
+        raise TypeError(
+            f'{name}(rig) was removed in itch-py 0.3.0. Use Rig.connect("bench3", {name}), '
+            f"which returns a {name} that owns its Rig."
+        )
+
+    def _attach(self, rig: Rig) -> None:
         self._rig = rig
-        self._batch: dict[Field[Any], _Selection] | None = None
-        """The Encoding each Field was last set to in the open batch, in first-set order."""
 
-    @contextmanager
-    def batch(self) -> Generator[None]:
-        """Changes several Fields together, in one write when the block ends.
+    @property
+    def rig(self) -> Rig:
+        """The Rig this DUT is wired to, for the rest of what a Rig does: `dut.rig.status()`."""
+        return self._rig
 
-        Setting a Field twice keeps the last Value. If two Fields need a shared Channel in
-        different positions, raises `BatchConflictError` and changes nothing.
+    def set(self, *channels: int) -> None:
+        """Turns `channels` on, in one write, as `Rig.set()` does: `dut.set(1, 5)`."""
+        self._rig.set(*channels)
+
+    def clear(self, *channels: int) -> None:
+        """Turns `channels` off, in one write, as `Rig.clear()` does: `dut.clear(3)`."""
+        self._rig.clear(*channels)
+
+    def write(self, *, set: Iterable[int] = (), clear: Iterable[int] = ()) -> None:
+        """Turns some Channels on and others off, in one write, as `Rig.write()` does:
+        `dut.write(set=[1, 5], clear=[3])`."""
+        self._rig.write(set=set, clear=clear)
+
+    @overload
+    def apply(self, state: int, /, *, mask: int = ALL_CHANNELS) -> None: ...
+    @overload
+    def apply(self, /, **settings: Setting) -> None: ...
+    def apply(self, state: object = _NO_STATE, /, **settings: object) -> None:
+        """Writes a 16-bit Channel state, as `Rig.apply()` does: `dut.apply(0x6742)`, or sets
+        several Fields in one write: `dut.apply(resolution="1080p", mode=("night", 2))`.
+
+        Each Field takes a Value or alias (Encoding 1), a `(Value, number)` tuple, or one of its
+        `Encoding`s. Everything is checked before the write, which changes only those Fields'
+        Channels. If two Fields need a shared Channel in different positions, raises
+        `BatchConflictError` and changes nothing.
         """
-        if self._batch is not None:
-            yield
-            return
-        self._batch = {}
-        try:
-            yield
-            batch = self._batch
-        finally:
-            self._batch = None
-        if not batch:
-            return
-        mask = values = 0
-        for selection in batch.values():
-            field_mask, bits = selection.field._mask, selection.bits
-            if clash := mask & field_mask & (values ^ bits):
-                bit = clash & -clash
-                other = next(s for s in batch.values() if s.field._mask & bit)
-                needs, other_needs = _position(bits, bit), _position(~bits, bit)
-                raise BatchConflictError(
-                    f"CH{bit.bit_length()}: {other.label} needs {other_needs}, but "
-                    f"{selection.label} needs {needs}. Set only one of them in a batch, or pick "
-                    "Values that agree. No Channels were changed."
+        if state is not _NO_STATE:
+            mask = settings.pop("mask", ALL_CHANNELS)
+            if settings:
+                raise TypeError(
+                    "apply() takes either a Channel state like dut.apply(0x6742) or Fields like "
+                    f"dut.apply({next(iter(settings))}=...), not both."
                 )
-            mask |= field_mask
-            values = values & ~field_mask | bits
-        self._rig._write_channels(mask, values)
+            self._rig.apply(cast(int, state), mask=cast(int, mask))
+            return
+        if not settings:
+            raise ValueError(
+                "apply() needs a Channel state or at least one Field, such as "
+                f"dut.apply({next(iter(self._fields), 'field')}=...)."
+            )
+        selections = [self._setting(name, setting) for name, setting in settings.items()]
+        self._rig._write_channels(*_union(selections))
+
+    def set_all(self) -> None:
+        """Turns every Channel on, in one write."""
+        self._rig.set_all()
+
+    def clear_all(self) -> None:
+        """Turns every Channel off: the Clear."""
+        self._rig.clear_all()
+
+    def get(self, channel: int) -> bool:
+        """Whether the Rig commands Channel `channel` on, read from the Rig now."""
+        return self._rig.get(channel)
+
+    def get_all(self) -> ChannelState:
+        """The state of all 16 Channels, read from the Rig now in one request."""
+        return self._rig.get_all()
+
+    def disconnect(self) -> None:
+        """Disconnects the Rig, as `Rig.disconnect()` does: releases this script's Lock and
+        closes the connection, leaving the Channels as they are."""
+        self._rig.disconnect()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.disconnect()
 
     def __str__(self) -> str:
         """Every Field's current Value on one line, for a test log."""
         state = self._rig._read_channels()
         return f"{type(self).__name__}({', '.join(f._show(state) for f in self._fields.values())})"
 
-    def _write(self, selection: _Selection) -> None:
-        """Writes one Field's Encoding, or keeps it for the open batch.
+    def _setting(self, name: str, setting: object) -> _Selection:
+        """The Encoding one Field setting of `apply()` names. Raises as `FieldOnRig.set()` does."""
+        if (f := self._fields.get(name)) is None:
+            names = list(self._fields)
+            raise ValueError(
+                f'{type(self).__name__} has no Field "{name}".{_did_you_mean(name, names)} '
+                f"Choose one of: {', '.join(names)}."
+            )
+        if isinstance(setting, Encoding):
+            selection = cast(Encoding[Any], setting)._selection
+            if selection.field is not f:
+                raise ValueError(
+                    f"{name}: {selection.describe()} is an Encoding of {selection.field.name}, "
+                    f"not {name}."
+                )
+            return selection
+        if isinstance(setting, str):
+            return f._select(setting, 1)
+        if isinstance(setting, tuple) and len(cast(tuple[object, ...], setting)) == 2:
+            value, number = cast(tuple[object, object], setting)
+            if isinstance(value, str):
+                return f._select(value, cast(int, number))
+        raise TypeError(
+            f"{name} should be a Value, a (Value, number) tuple or an Encoding, not {setting!r}."
+        )
 
-        Every Field write goes through here.
-        """
-        if self._batch is not None:
-            self._batch[selection.field] = selection
-        else:
-            self._rig._write_channels(selection.field._mask, selection.bits)
+    def _write(self, selection: _Selection) -> None:
+        """Writes one Field's Encoding."""
+        self._rig._write_channels(selection.field._mask, selection.bits)
+
+    if not TYPE_CHECKING:
+        # Hidden from type checkers, so an editor still flags a misspelt Field or removed method.
+        def __getattr__(self, name: str) -> NoReturn:
+            raise missing(self, name, REMOVED_FROM_DUT)
+
+
+def _union(selections: list[_Selection]) -> tuple[int, int]:
+    """The mask and values of one write setting every Encoding in `selections`, later ones
+    winning on a Field's own Channels. Raises `BatchConflictError` if two Fields disagree on a
+    shared Channel."""
+    mask = values = 0
+    for selection in selections:
+        field_mask, bits = selection.field._mask, selection.bits
+        if clash := mask & field_mask & (values ^ bits):
+            bit = clash & -clash
+            other = next(s for s in selections if s.field._mask & bit)
+            needs, other_needs = _position(bits, bit), _position(~bits, bit)
+            raise BatchConflictError(
+                f"CH{bit.bit_length()}: {other.label} needs {other_needs}, but "
+                f"{selection.label} needs {needs}. Set only one of them, or pick Values "
+                "that agree. No Channels were changed."
+            )
+        mask |= field_mask
+        values = values & ~field_mask | bits
+    return mask, values
+
+
+def check_profile(profile: object) -> None:
+    """Raises `TypeError` unless `profile` is a Profile subclass, for `Rig.connect()`."""
+    if not isinstance(profile, type) or not issubclass(profile, Profile) or profile is Profile:
+        raise TypeError(f"profile must be a Profile subclass, such as AcmeWidget, not {profile!r}.")
+
+
+def connected(profile: type[P], rig: Rig) -> P:
+    """A DUT of `profile` that owns `rig`, for `Rig.connect()`."""
+    dut = profile.__new__(profile)
+    dut._attach(rig)
+    return dut
+
+
+def _check_names(fields: dict[str, Field[Any]]) -> None:
+    """Raises `ProfileError` for a Field named after part of a DUT's own surface."""
+    for name, f in fields.items():
+        if name in RESERVED:
+            raise ProfileError(
+                f"{f._where}: Field `{name}` clashes with a DUT method; give it another name."
+            )
+        if name.startswith("_"):
+            raise ProfileError(
+                f"{f._where}: Field `{name}` starts with `_`, which a DUT keeps for itself; "
+                "give it another name."
+            )
 
 
 def _check_repeated_values(cls: type[Profile], fields: dict[str, Field[Any]]) -> None:
