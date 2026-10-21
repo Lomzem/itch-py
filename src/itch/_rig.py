@@ -8,7 +8,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping
 from ipaddress import IPv4Address, IPv4Interface
 from types import TracebackType
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self, TypeVar, overload
 
 from itch import _mdns, _wire
 from itch._connection import Connection
@@ -16,6 +16,9 @@ from itch._discovery import RigInfo, find_rig, rig_infos
 from itch._errors import DevelopmentBuildWarning, DisconnectedError, ItchError, LockedError
 from itch._status import Status, from_reply
 from itch._transport import open_tcp
+
+if TYPE_CHECKING:
+    from itch._profile import Profile
 
 CHANNELS = range(1, 17)
 """The Channel numbers, CH1 to CH16 as on the board."""
@@ -26,16 +29,22 @@ Position = Literal["on", "off"]
 ALL_CHANNELS = 0xFFFF
 """The mask of all 16 Channels."""
 
+P = TypeVar("P", bound="Profile")
+
 _LOGGER = logging.getLogger("itch")
 
 _NOT_UNICAST = "it must not be zero, 255.255.255.255 or multicast."
 
 
 class Rig:
-    """A connected Rig. Get one with `Rig.connect()`, and close it when done.
+    """A connected Rig. Get one with `Rig.connect()`, and disconnect it when done.
 
     ```python
-    with Rig.connect("bench3") as rig:
+    rig = Rig.connect("bench3")
+    rig.set(3)
+    rig.disconnect()
+
+    with Rig.connect("bench3") as rig:  # Leaving the block disconnects.
         print(rig.label, rig.hardware_id, rig.firmware_version)
         rig.set(3)
     ```
@@ -57,18 +66,63 @@ class Rig:
         self._left_locked = False
         """Set if the connection dropped before `ReleaseLock` could be sent."""
 
+    @overload
     @classmethod
     def connect(
         cls,
         name: str | None = None,
+        profile: None = None,
         *,
         holder: str | None = None,
         lock: bool = True,
         take_over: bool = False,
         log_level: int | None = None,
         browse_timeout: float = _mdns.BROWSE_TIMEOUT,
-    ) -> Self:
+    ) -> Self: ...
+    @overload
+    @classmethod
+    def connect(
+        cls,
+        name: str | None,
+        profile: type[P],
+        *,
+        holder: str | None = None,
+        lock: bool = True,
+        take_over: bool = False,
+        log_level: int | None = None,
+        browse_timeout: float = _mdns.BROWSE_TIMEOUT,
+    ) -> P: ...
+    @overload
+    @classmethod
+    def connect(
+        cls,
+        name: str | None = None,
+        *,
+        profile: type[P],
+        holder: str | None = None,
+        lock: bool = True,
+        take_over: bool = False,
+        log_level: int | None = None,
+        browse_timeout: float = _mdns.BROWSE_TIMEOUT,
+    ) -> P: ...
+    @classmethod
+    def connect(
+        cls,
+        name: str | None = None,
+        profile: type[Profile] | None = None,
+        *,
+        holder: str | None = None,
+        lock: bool = True,
+        take_over: bool = False,
+        log_level: int | None = None,
+        browse_timeout: float = _mdns.BROWSE_TIMEOUT,
+    ) -> Self | Profile:
         """Connects to a Rig and checks it speaks this itch-py's protocol.
+
+        Returns the `Rig`, or with a `profile`, such as `Rig.connect("bench3", AcmeWidget)`,
+        a DUT of that Profile: one object driving the Profile's Fields and the Rig's Channels,
+        with the Rig itself as `dut.rig`. `Rig.connect(profile=AcmeWidget)` connects to the one
+        Rig plugged in. Every other option works the same with or without a Profile.
 
         `name` picks a Rig plugged in over USB by its port (`COM4`, `/dev/ttyACM0`), its
         Hardware ID (`60:55:F9:C0:27:18`) or its label (`bench3`), ignoring case. Leave it out
@@ -81,7 +135,7 @@ class Rig:
         UTF-8. It defaults to `user@host`, cut short to 64 bytes. Two scripts run by the same
         user on the same computer share it, and so share the Lock.
 
-        Connecting Locks the Rig under `holder` until `close()`, so nobody else's script can
+        Connecting Locks the Rig under `holder` until `disconnect()`, so nobody else's script can
         change it, as `rig.lock()` does. Pass `lock=False` to only look at a Rig someone else
         has Locked: changes then succeed only while the Rig is unlocked. Pass `take_over=True`
         to take the Lock from whoever holds it; their next change then raises `LockedError`.
@@ -91,7 +145,8 @@ class Rig:
         Hardware ID than its USB port lists or it advertises, if a Rig on the network refuses
         the connection, or if `holder` is left out and the user or host name can't be read.
         Raises `LockedError` if another Holder has Locked the Rig. Raises `ValueError` if
-        `holder` is empty or over 64 bytes. Warns with
+        `holder` is empty or over 64 bytes, and `TypeError` if `profile` isn't a Profile
+        subclass, both before connecting. Warns with
         `DevelopmentBuildWarning` if the Rig runs a development build.
 
         The Rig's own log messages are off unless you pass `log_level`, such as
@@ -99,6 +154,10 @@ class Rig:
         whenever itch-py hears from the Rig, and when it closes. Configure Python `logging`
         to see them.
         """
+        from itch._profile import check_profile, connected  # It imports this module.
+
+        if profile is not None:
+            check_profile(profile)
         holder = _default_holder() if holder is None else _checked_holder(holder)
         if name is not None and name.startswith("tcp://"):
             rig = cls(Connection.open(open_tcp(name), log_level=log_level), holder)
@@ -106,7 +165,7 @@ class Rig:
             rig = cls(find_rig(name, log_level, browse_timeout), holder)
         try:
             if lock:
-                rig.lock(take_over=take_over)  # A RigLock that only `close()` releases.
+                rig.lock(take_over=take_over)  # A RigLock that only `disconnect()` releases.
             if rig._connection.hello.dirty:
                 warnings.warn(
                     f"Rig {rig.label} runs a development build, built from uncommitted code. "
@@ -115,9 +174,9 @@ class Rig:
                     stacklevel=2,
                 )
         except BaseException:
-            rig.close()  # Locking failed, or the warning was turned into an error.
+            rig.disconnect()  # Locking failed, or the warning was turned into an error.
             raise
-        return rig
+        return rig if profile is None else connected(profile, rig)
 
     @property
     def label(self) -> str:
@@ -143,8 +202,8 @@ class Rig:
         """Locks the Rig under this script's Holder now, so nobody else's script can change it.
 
         Use it as `with rig.lock(): ...` to release the Lock when the block ends, or keep it
-        and call `.release()`. `close()` releases it too. Locking again under the same Holder,
-        as after a crash or a dropped connection, picks the Lock back up.
+        and call `.release()`. `disconnect()` releases it too. Locking again under the same
+        Holder, as after a crash or a dropped connection, picks the Lock back up.
 
         Locks nest: the Rig stays Locked until every `RigLock` is released, including the
         Lock `Rig.connect()` took, so `with rig.lock():` inside a Locked script leaves it
@@ -354,12 +413,14 @@ class Rig:
         """Returns the Rig's health since boot, who holds its Lock, and its network."""
         return from_reply(self._connection.request(_wire.GetStatus(), _wire.GetStatusReply))
 
-    def close(self) -> None:
-        """Releases this script's Lock, if it holds one, and closes the connection.
+    def disconnect(self) -> None:
+        """Releases this script's Lock, if it holds one, and closes the connection, so another
+        script can connect. Leaving a `with Rig.connect(...)` block does it too.
 
-        Safe to call twice. The Channels stay as they are: the Rig keeps them for the next
-        script. If someone took the Lock over, or releasing fails, `close()` logs a warning to
-        the `itch` logger instead of raising.
+        The Channels stay as they are: the Rig keeps them for the next script. Calling it again
+        does nothing, and anything else then raises `DisconnectedError`. If someone took the
+        Lock over, or releasing fails, it logs a warning to the `itch` logger instead of
+        raising.
         """
         try:
             self._release_lock()
@@ -367,6 +428,10 @@ class Rig:
             _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.label, err)
         finally:
             self._connection.close()
+
+    def close(self) -> None:
+        """Does what `disconnect()` does."""
+        self.disconnect()
 
     def __enter__(self) -> Self:
         return self
@@ -377,7 +442,7 @@ class Rig:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        self.disconnect()
 
     def __repr__(self) -> str:
         return f"<Rig {self.label} {self.hardware_id} firmware {self.firmware_version}>"
@@ -399,7 +464,7 @@ class Rig:
     def _release_one(self) -> None:
         """Releases one `RigLock`, and the Rig's Lock with the last."""
         with self._locking:
-            if self._locks == 0:  # `close()` released it already.
+            if self._locks == 0:  # `disconnect()` released it already.
                 return
             self._locks -= 1
             if self._locks == 0:
