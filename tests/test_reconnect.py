@@ -87,7 +87,9 @@ assert sys.stdin.readline().strip() == "exit"
                     with Rig.connect(second.url, lock=False) as observer:
                         assert observer.status().holder is None
                         assert observer.get_all() == 0x0002
-                    assert stderr == ""
+                    # Python 3.14+ reports the FileHandler's failed open to stderr itself.
+                    assert not stderr or stderr.startswith("--- Logging error ---\n"), stderr
+                    assert "Exception ignored" not in stderr, stderr  # No unhandled atexit error.
             finally:
                 other.communicate(timeout=10)
 
