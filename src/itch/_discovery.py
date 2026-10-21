@@ -9,9 +9,9 @@ import dataclasses
 from collections.abc import Iterable
 from typing import Literal
 
-from itch import _mdns
+from itch import _mdns, _wire
 from itch._connection import Connection, same_hardware_id
-from itch._endpoints import Connected, held, release, tcp_endpoint, usb_endpoint
+from itch._endpoints import held, release, tcp_endpoint, usb_endpoint
 from itch._errors import AmbiguousRigError, DisconnectedError, ItchError, RigNotFoundError
 from itch._transport import TcpTransport
 from itch._usb import PortInUse, UsbPort, UsbTransport, usb_ports
@@ -117,8 +117,8 @@ def _find_named(
     """Ports where this process has connected the Rig labelled `name`, to connect again."""
     try:
         for port in ports:
-            if (rig := held(usb_endpoint(port.device))) is not None and (
-                info := _held_info(port, rig)
+            if (held_here := held(usb_endpoint(port.device))) is not None and (
+                info := _held_info(port, held_here)
             ):
                 found.append(info)
                 if _same_label(info, name):
@@ -252,16 +252,22 @@ def _open(port: UsbPort, log_level: int | None) -> Connection:
         ) from None
 
 
-def _held_info(port: UsbPort, rig: Connected) -> RigInfo | None:
-    """The Rig this process has connected on `port`, as it labels itself now. `None` if that
-    connection has dropped, as after a reboot, and is now closed, so the port can be probed."""
+def _held_info(port: UsbPort, connection: Connection) -> RigInfo | None:
+    """The Rig this process has connected on `port`, asked its Label again over `connection`,
+    since another connection may have renamed it, without disturbing its Rig.
+
+    `None` if the connection has dropped, as after a reboot, after closing it so the port can be
+    probed. Its Rig stays registered, so connecting there again still says it was replaced.
+    """
     try:
-        rig._refresh()  # pyright: ignore[reportPrivateUsage]  # Not part of Rig's API.
+        connection.name = connection.request(_wire.Hello(), _wire.HelloReply).label
     except DisconnectedError:
+        connection.close()
         return None
     except ItchError as err:
-        return RigInfo(port.device, rig.hardware_id, None, None, str(err))
-    return RigInfo(port.device, rig.hardware_id, rig.label, rig.firmware_version)
+        return RigInfo(port.device, connection.hardware_id, None, None, str(err))
+    firmware_version = connection.hello.firmware_version
+    return RigInfo(port.device, connection.hardware_id, connection.name, firmware_version)
 
 
 def _probe(port: UsbPort) -> tuple[Connection | None, RigInfo]:

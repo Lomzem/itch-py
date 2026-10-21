@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import getpass
 import logging
 import socket
@@ -68,11 +67,8 @@ class Rig:
         self._connection = connection
         self._holder = holder
         """Sent with every change, so a Rig Locked under this name accepts it."""
-        self._label = connection.hello.label
         self._locks = _Locks(connection, holder)
-        # Disconnects an older Rig this process has there. Disconnecting this one needs only its
-        # Locks and connection, so it still happens at exit if the script drops this Rig.
-        claim(connection.endpoint, self, functools.partial(_disconnect, self._locks, connection))
+        claim(connection.endpoint, self, self._locks)  # Disconnects an older Rig there.
 
     @overload
     @classmethod
@@ -195,7 +191,7 @@ class Rig:
     @property
     def label(self) -> str:
         """The Rig's Label, such as `itch-C02718`."""
-        return self._label
+        return self._connection.name
 
     @property
     def hardware_id(self) -> str:
@@ -315,7 +311,7 @@ class Rig:
             )
         request = _wire.SetLabel(self._holder, label)
         reply = self._connection.request(request, _wire.SetLabelReply)
-        self._label = self._connection.name = reply.label
+        self._connection.name = reply.label
 
     def set_wifi(self, ssid: str, passphrase: str) -> None:
         """Gives the Rig credentials for the Wi-Fi network `ssid`, replacing any it had.
@@ -410,7 +406,7 @@ class Rig:
         disconnects as it exits.
         """
         forget(self._connection.endpoint, self)
-        _disconnect(self._locks, self._connection)
+        self._locks.disconnect()
 
     def __enter__(self) -> Self:
         return self
@@ -433,20 +429,7 @@ class Rig:
 
     def _replaced(self) -> None:
         """Disconnects, because this process is connecting to the same Rig again."""
-        _disconnect(self._locks, self._connection, replaced=True)
-
-    def _refresh(self) -> None:
-        """Asks the Rig its Label again, since another connection may have renamed it.
-
-        Raises `DisconnectedError` if the connection has dropped, after closing it to free the
-        port. The Rig stays registered, so connecting there again still says it was replaced.
-        """
-        try:
-            hello = self._connection.request(_wire.Hello(), _wire.HelloReply)
-        except DisconnectedError:
-            self._connection.close()
-            raise
-        self._label = self._connection.name = hello.label
+        self._locks.disconnect(replaced=True)
 
     def _write_channels(self, mask: int, values: int) -> None:
         """One Mask write: the Channels in `mask` take their bits from `values`."""
@@ -464,11 +447,11 @@ class Rig:
 
 
 class _Locks:
-    """The Locks a script holds on a Rig over one connection. Kept apart from the `Rig`, so they
-    can still be released at exit if the script dropped the Rig."""
+    """The Locks a script holds on a Rig over one connection, and disconnecting it. Kept apart
+    from the `Rig`, so that a Rig the script dropped still disconnects at exit."""
 
     def __init__(self, connection: Connection, holder: str) -> None:
-        self._connection = connection
+        self.connection = connection
         self._holder = holder
         self._live = 0
         """How many `RigLock`s are live, counting the one `Rig.connect()` took. Releasing the
@@ -483,7 +466,7 @@ class _Locks:
     def take(self, take_over: bool) -> None:
         """Locks the Rig, or picks the Lock up again, for one more `RigLock`."""
         with self._locking:
-            self._connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
+            self.connection.request(_wire.Lock(self._holder, take_over), _wire.LockReply)
             self._live += 1
 
     def release_one(self) -> None:
@@ -514,25 +497,27 @@ class _Locks:
         connection can't release it; reconnecting under the same Holder picks it back up.
         """
         try:
-            self._connection.request(_wire.ReleaseLock(self._holder), _wire.ReleaseLockReply)
+            self.connection.request(_wire.ReleaseLock(self._holder), _wire.ReleaseLockReply)
         except LockedError:
             _LOGGER.warning(
                 "Rig %s was taken over before %s released its Lock.",
-                self._connection.name,
+                self.connection.name,
                 self._holder,
             )
         except DisconnectedError:
             self.left_locked = True
 
+    def disconnect(self, *, replaced: bool = False) -> None:
+        """Releases the Lock if held, then closes the connection. Safe to call twice.
 
-def _disconnect(locks: _Locks, connection: Connection, *, replaced: bool = False) -> None:
-    """Releases the Lock if `locks` hold it, then closes `connection`. Safe to call twice."""
-    try:
-        locks.release_all()
-    except ItchError as err:
-        _LOGGER.warning("Couldn't release Rig %s's Lock: %s", connection.name, err)
-    finally:
-        connection.close(replaced=replaced)
+        `replaced` says it is because this process connected to the same Rig again.
+        """
+        try:
+            self.release_all()
+        except ItchError as err:
+            _LOGGER.warning("Couldn't release Rig %s's Lock: %s", self.connection.name, err)
+        finally:
+            self.connection.close(replaced=replaced)
 
 
 class ChannelState(int):
