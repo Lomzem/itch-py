@@ -400,7 +400,7 @@ class Rig:
         script can connect. Leaving a `with Rig.connect(...)` block does it too.
 
         The Channels stay as they are: the Rig keeps them for the next script. Calling it again
-        does nothing, and anything else then raises `DisconnectedError`. If someone took the
+        does nothing, and any read or change then raises `DisconnectedError`. If someone took the
         Lock over, or releasing fails, it logs a warning to the `itch` logger instead of
         raising. A script that ends without it, normally or on an uncaught exception,
         disconnects as it exits.

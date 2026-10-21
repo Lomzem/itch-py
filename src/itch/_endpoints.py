@@ -4,7 +4,7 @@ TCP address.
 Connecting to an endpoint again first disconnects the older Rig there, so a notebook cell
 that connects can run again. At exit, every Rig still connected is disconnected, releasing its
 Lock. Only weak references to Rigs are kept, so a Rig dropped without disconnecting isn't kept
-alive: its connection stays open, Locked, until then.
+alive: its connection stays open, with any Lock it holds, until then.
 """
 
 from __future__ import annotations
