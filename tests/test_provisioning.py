@@ -13,6 +13,7 @@ from ipaddress import IPv4Address, IPv4Interface
 import pytest
 from conftest import RunningSim
 from scripted_rig import ACME_HELLO, HangUp, ScriptedRig, after_connecting
+from tcp_client import other_client
 
 from itch import (
     AddressMode,
@@ -32,6 +33,7 @@ from itch._wire import (
     Message,
     OkResponse,
     ReleaseLock,
+    ReleaseLockReply,
     Request,
     SetAddress,
     SetAddressReply,
@@ -106,14 +108,14 @@ def test_a_storage_fault_raises_and_keeps_the_old_setting(helper: Callable[[Rig]
 def test_another_holders_lock_refuses_each_helper(
     own_sim: RunningSim, helper: Callable[[Rig], None]
 ) -> None:
-    with (
-        Rig.connect(own_sim.url, holder="alice"),
-        Rig.connect(own_sim.url, holder="bob", lock=False) as bob,
-    ):
-        before = settings(bob.status())
-        with pytest.raises(LockedError, match="Locked by alice"):
-            helper(bob)
-        assert settings(bob.status()) == before
+    with other_client(own_sim.url) as alice:
+        alice.request(Lock("alice", takeover=False), LockReply)
+        with Rig.connect(own_sim.url, holder="bob", lock=False) as bob:
+            before = settings(bob.status())
+            with pytest.raises(LockedError, match="Locked by alice"):
+                helper(bob)
+            assert settings(bob.status()) == before
+        alice.request(ReleaseLock("alice"), ReleaseLockReply)
 
 
 INVALID: dict[str, tuple[Callable[[Rig], None], str]] = {
@@ -335,6 +337,8 @@ def test_itch_address_static_help_says_to_fix_a_wrong_address_over_usb(
 def test_a_provisioning_command_fails_while_another_holder_has_the_lock(
     own_sim: RunningSim, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with Rig.connect(own_sim.url, holder="alice"):
+    with other_client(own_sim.url) as alice:
+        alice.request(Lock("alice", takeover=False), LockReply)
         assert main(["address", "dhcp", own_sim.url]) == 1
+        alice.request(ReleaseLock("alice"), ReleaseLockReply)
     assert "Locked by alice" in capsys.readouterr().err

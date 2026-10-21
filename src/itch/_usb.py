@@ -9,6 +9,7 @@ import sys
 import serial
 from serial.tools import list_ports
 
+from itch._endpoints import usb_endpoint
 from itch._errors import ItchError
 from itch._transport import Disconnected, StreamTransport
 
@@ -46,6 +47,7 @@ class UsbTransport(StreamTransport):
     def __init__(self, device: str) -> None:
         """Opens `device` for this process alone. Raises `PortInUse` if another program has it."""
         super().__init__(device)
+        self.endpoint = usb_endpoint(device)
         # The S3 resets on RTS without DTR, and sets its download flag on DTR without RTS.
         # Linux raises both lines on open and pySerial then applies DTR before RTS, so keep both
         # up there. On Windows keep both down, as esptool does. Never touch them again.

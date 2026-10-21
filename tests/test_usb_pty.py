@@ -6,16 +6,25 @@ import contextlib
 import os
 import select
 import socket
+import subprocess
 import sys
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from conftest import RunningSim
 from serial.tools import list_ports
 from serial.tools.list_ports_common import ListPortInfo
 
-from itch import NotRespondingError, Rig, RigNotFoundError, _connection
+from itch import (
+    DisconnectedError,
+    NotRespondingError,
+    Rig,
+    RigNotFoundError,
+    _connection,
+    list_rigs,
+)
 
 SIM_HARDWARE_ID = "02:00:00:51:4D:01"
 
@@ -67,10 +76,67 @@ def test_talks_to_a_rig_through_pyserial(pty_rig: str) -> None:
         assert rig.get_channel(3) == "on"
 
 
-def test_a_port_another_itch_py_has_open_is_in_use(pty_rig: str) -> None:
-    with Rig.connect(pty_rig), pytest.raises(RigNotFoundError, match="in use by another program"):
-        Rig.connect(SIM_HARDWARE_ID)
-    Rig.connect(pty_rig).close()
+def test_a_port_another_process_has_open_is_in_use(pty_rig: str) -> None:
+    script = f"""
+import sys
+import serial
+with serial.Serial({pty_rig!r}, baudrate=115200, exclusive=True):
+    print("port open", flush=True)
+    sys.stdin.read()
+"""
+    with subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as other:
+        try:
+            assert other.stdout is not None
+            assert other.stdout.readline().strip() == "port open"
+            with pytest.raises(RigNotFoundError, match="in use by another program"):
+                Rig.connect(SIM_HARDWARE_ID)
+        finally:
+            other.communicate(timeout=10)
+        assert other.returncode == 0
+    with Rig.connect(pty_rig) as rig:
+        assert rig.hardware_id == SIM_HARDWARE_ID
+
+
+@pytest.mark.parametrize("via", ["device", "symlink", "Hardware-ID", "label", "sole-port"])
+def test_usb_reconnect_releases_the_port_before_opening_it_again(
+    pty_rig: str, tmp_path: Path, via: str
+) -> None:
+    with Rig.connect(pty_rig, holder="alice") as old:
+        old.apply(0x8011)
+        name: str | None = pty_rig
+        if via == "symlink":
+            link = tmp_path / "rig-port"
+            link.symlink_to(pty_rig)
+            name = str(link)
+        elif via == "Hardware-ID":
+            name = SIM_HARDWARE_ID
+        elif via == "label":
+            name = old.label
+        elif via == "sole-port":
+            name = None
+        with Rig.connect(name, holder="bob") as new:
+            assert new.status().holder == "bob"
+            assert new.get_all() == 0x8011
+            with pytest.raises(DisconnectedError, match="connected to the same Rig again"):
+                old.set(1)
+            old.disconnect()
+            assert new.status().holder == "bob"
+
+
+def test_listing_an_open_usb_rig_leaves_it_connected_and_in_use(pty_rig: str) -> None:
+    with Rig.connect(pty_rig, holder="alice") as rig:
+        rig.apply(0x8011)
+        [info] = list_rigs()
+        assert info.port == pty_rig
+        assert info.in_use
+        assert rig.status().holder == "alice"
+        assert rig.get_all() == 0x8011
 
 
 def test_over_usb_silence_after_a_network_change_is_unexpected(

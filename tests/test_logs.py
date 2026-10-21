@@ -5,6 +5,7 @@ import threading
 
 import pytest
 from scripted_rig import ACME_HELLO, ScriptedRig, answering
+from tcp_client import other_client
 
 from itch import Rig
 from itch._connection import Connection
@@ -52,7 +53,7 @@ def test_sets_the_rig_log_level_the_user_opted_in_to(python_level: int, rig_leve
 def test_forwards_rig_logs_to_python_logging(sim: str, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="itch.rig")
     with Rig.connect(sim, log_level=logging.INFO) as rig:
-        Rig.connect(sim).close()
+        other_client(sim).close()
         rig.get_channels()  # Its reply comes after the Log Events, which go first.
     record = next(r for r in caplog.records if "connected" in r.message)
     assert record.name == "itch.rig"
@@ -79,7 +80,7 @@ def test_forwards_rig_logs_while_the_script_is_idle(
     logger.addHandler(handler)
     try:
         with Rig.connect(sim, log_level=logging.INFO):
-            Rig.connect(sim).close()  # The sim logs this connection to every opted-in one.
+            other_client(sim).close()  # The sim logs this connection to every opted-in one.
             assert handler.heard.wait(1.0)
     finally:
         logger.removeHandler(handler)
@@ -90,14 +91,14 @@ def test_forwards_rig_logs_still_unread_when_the_rig_closes(
 ) -> None:
     caplog.set_level(logging.DEBUG, logger="itch.rig")
     with Rig.connect(sim, log_level=logging.INFO):
-        Rig.connect(sim).close()
+        other_client(sim).close()
     assert any("connected" in r.message for r in caplog.records), caplog.records
 
 
 def test_forwards_nothing_by_default(sim: str, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="itch.rig")
     with Rig.connect(sim) as rig:
-        Rig.connect(sim).close()
+        other_client(sim).close()
         rig.get_channels()
     assert caplog.records == []
 
@@ -154,7 +155,7 @@ def test_a_log_handler_may_use_the_rig(sim: str, caplog: pytest.LogCaptureFixtur
         handler = Reading(rig)
         logger.addHandler(handler)
         try:
-            Rig.connect(sim).close()
+            other_client(sim).close()
             rig.get_channels()
         finally:
             logger.removeHandler(handler)

@@ -3,8 +3,10 @@
 import pytest
 from acme_widget import AcmeWidget
 from scripted_rig import channel_writes, granting_writes
+from tcp_client import other_client
 
 from itch import BatchConflictError, Profile, Rig, field
+from itch._wire import GetChannels, GetChannelsReply
 
 ALL_OFF = dict.fromkeys(range(1, 17), "off")
 
@@ -18,14 +20,14 @@ def test_fields_sharing_a_channel_read_the_same_switch(rig: Rig) -> None:
 
 
 def test_a_batch_changes_nothing_on_the_rig_until_the_block_ends(sim: str) -> None:
-    with Rig.connect(sim) as rig, Rig.connect(sim) as watcher:
+    with Rig.connect(sim) as rig, other_client(sim) as watcher:
         dut = AcmeWidget(rig)
         rig.clear_all()
         with dut.batch():
             dut.resolution.set("4k")
             dut.mode.set("night", encoding=2)
-            assert watcher.get_channels() == ALL_OFF
-        assert watcher.get_channels() == {**ALL_OFF, 1: "on", 2: "on", 4: "on", 6: "on"}
+            assert watcher.request(GetChannels(), GetChannelsReply).state == 0
+        assert watcher.request(GetChannels(), GetChannelsReply).state == 0x002B
 
 
 def test_a_batch_is_one_mask_write_when_the_block_ends() -> None:

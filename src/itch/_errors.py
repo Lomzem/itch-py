@@ -49,11 +49,24 @@ class DisconnectedError(ItchError):
 
     After the Rig accepts new Wi-Fi or address settings over the network, the connection is
     expected to end, and the message says to reconnect after the network change. After
-    `disconnect()`, the message says this script disconnected.
+    `disconnect()`, the message says this script disconnected, and after the script connected
+    to the same Rig again, which disconnects the older connection, it says to use the newer.
     """
 
-    def __init__(self, rig: str, *, network_changed: bool = False, closed: bool = False) -> None:
-        if closed:
+    def __init__(
+        self,
+        rig: str,
+        *,
+        network_changed: bool = False,
+        closed: bool = False,
+        replaced: bool = False,
+    ) -> None:
+        if replaced:
+            message = (
+                f"Rig {rig} was disconnected because this script connected to the same Rig "
+                "again; use the newer connection."
+            )
+        elif closed:
             message = (
                 f"Rig {rig} was disconnected by this script; connect again with Rig.connect() "
                 "to use it."
