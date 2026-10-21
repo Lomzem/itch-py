@@ -44,7 +44,7 @@ $ itch list
 PORT          HARDWARE ID        LABEL   FIRMWARE
 /dev/ttyACM0  60:55:F9:C0:27:18  bench3  1.0.0
 /dev/ttyACM1  60:55:F9:C0:27:19  in use
-/dev/ttyACM2  60:55:F9:C0:27:1A  error   Rig /dev/ttyACM2 speaks protocol 2, but this itch-py speaks protocol 1. Have the dev update the Rig or itch-py.
+/dev/ttyACM2  60:55:F9:C0:27:1A  error   Rig /dev/ttyACM2 speaks protocol 1, but this itch-py speaks protocol 3. Have the dev update the Rig or itch-py.
 ```
 
 A free Rig that itch-py can't open or talk to shows its error in the list, and connecting by label skips it. Connecting to it by port or Hardware ID raises that error.
@@ -72,39 +72,36 @@ with Rig.connect("tcp://127.0.0.1:<port>") as rig:
 
 ## Set and read Channels
 
-Channels are numbered 1 to 16, as on the board. `"on"` means the contact is closed, like a DIP switch's ON position. Changing Channels needs a session; reading them doesn't.
+Channels are numbered 1 to 16, as on the board. `"on"` means the contact is closed, like a DIP switch's ON position.
 
 ```python
-with rig.session():
-    rig.set_channel(3, "on")
-    rig.set_channels({1: "on", 5: "off"})  # one write; other Channels stay as they are
-    rig.clear()  # every Channel off
+rig.set_channel(3, "on")
+rig.set_channels({1: "on", 5: "off"})  # one write; other Channels stay as they are
+rig.clear()  # every Channel off
 
 print(rig.get_channel(3))  # "off"
 print(rig.get_channels())  # {1: "off", 2: "off", ..., 16: "off"}
 print(rig.get_channels([1, 5]))  # {1: "off", 5: "off"}
 ```
 
-The session keeps itself alive while the script sleeps or blocks. In Jupyter or a REPL, keep it across cells with `s = rig.session()` and later `s.release()`. Leaving the session leaves the Channels as they are.
+The Rig keeps its Channels when the script ends or disconnects: closing never turns them off. The next script, or a reconnect, finds them as they were left.
 
 ## Sharing a Rig
 
-One script at a time holds a Rig. If someone else holds it, `rig.session()` raises `LeaseHeldError` at once, naming them (`user@host script.py` by default; pass `holder="..."` to say more, up to 64 bytes). If their script is dead, take the Rig over:
+Every change your script makes carries its Holder: `user@host` by default, such as `qa@bench-pc`. Pass `holder="..."` to name it yourself, up to 64 bytes:
 
 ```python
-with rig.session(takeover=True):
-    ...
+Rig.connect("bench3", holder="qa@bench-pc")
 ```
 
-The script you took it from gets `LeaseLostError` on its next change. A session left idle too long (a paused debugger, say) carries on as before if nobody else took the Rig.
+Two scripts run by the same user on the same computer share a Holder. A Rig that someone else has Locked refuses changes with `LockedError`, naming who holds it; reading Channels still works. `rig.status().holder` says who holds the Lock, or `None`.
 
 ## Rename a Rig
 
-A new Rig is labelled `itch-` plus the end of its Hardware ID, such as `itch-C02718`. Give it a bench name, up to 64 bytes, inside a session; the Rig keeps it across reboots, and an empty label restores the default:
+A new Rig is labelled `itch-` plus the end of its Hardware ID, such as `itch-C02718`. Give it a bench name, up to 64 bytes; the Rig keeps it across reboots, and an empty label restores the default:
 
 ```python
-with rig.session():
-    rig.set_label("bench3")
+rig.set_label("bench3")
 ```
 
 Or from the command line:
@@ -148,12 +145,11 @@ Then drive the DUT through it. In VS Code, the Values autocomplete inside `set("
 
 ```python
 dut = AcmeWidget(rig)
-with rig.session():
-    dut.resolution.set("1080p")
-    dut.mode.set("night", encoding=2)
-    for encoding in dut.mode.all_encodings():  # every Encoding of every Value
-        encoding.set()
-        ...  # check the DUT
+dut.resolution.set("1080p")
+dut.mode.set("night", encoding=2)
+for encoding in dut.mode.all_encodings():  # every Encoding of every Value
+    encoding.set()
+    ...  # check the DUT
 
 print(dut.mode.get())  # "night"; an alias reads back as the Value it names
 print(dut.mode.get_encoding())  # mode="night" Encoding 2 of 2 ["on", "off", "on"]
@@ -199,8 +195,8 @@ uv run pyright
 
 The tests run against a real `itch-sim` and the protocol's conformance vectors. They take them from the first of:
 
-1. `ITCH_SIM` (an `itch-sim` binary) and `ITCH_VECTORS` (`vectors-v1.json`).
+1. `ITCH_SIM` (an `itch-sim` binary) and `ITCH_VECTORS` (`vectors-v3.json`).
 2. An `itch` checkout, given by `ITCH_REPO` or found next to this one. The sim is built there with `cargo build -p itch-sim`.
 3. The `itch` release pinned by `TAG` in `tests/itch_release.py`. The first run downloads its sim and vectors into a local cache and checks them against the release manifest; later runs work offline. CI uses this.
 
-To move to a new `itch` release, bump `TAG` and add a row to the table under [Releases](#releases).
+To move to a new `itch` release, bump `TAG` (and `VECTORS_ASSET` if the protocol changed). Add a row to the table under [Releases](#releases) when cutting the itch-py release tested with it.
