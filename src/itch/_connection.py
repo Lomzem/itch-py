@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import itertools
 import logging
+import queue
 import threading
 import time
+from collections.abc import Callable
 from types import TracebackType
-from typing import Self, TypeVar
+from typing import Self, TypeVar, cast
 
 from itch import _wire
 from itch._errors import (
@@ -29,6 +32,9 @@ NETWORK_CONNECTIONS = 4
 _LOG_DRAIN_TIMEOUT = 0.05
 """Seconds `close()` waits for Log Events still on their way."""
 
+_READ_POLL = 0.05
+"""Seconds the reader waits for each payload before checking whether to stop."""
+
 _Reply = TypeVar("_Reply", bound=_wire.ReplyBody)
 
 _RIG_LOGGER = logging.getLogger("itch.rig")
@@ -40,8 +46,10 @@ _PYTHON_LEVELS = (logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG)
 class Connection:
     """An open connection to a Rig that has answered `Hello`. Open one with `Connection.open()`.
 
-    `request()` may be called from several threads: requests take turns. The Rig's Log Events
-    go to the `itch.rig` logger after each reply, outside that turn, and when it closes.
+    `request()` may be called from several threads: requests take turns. A reader thread
+    receives everything the Rig sends, handing each reply to the request waiting for it. The
+    Rig's Log Events go to the `itch.rig` logger as they arrive, from a thread of their own, so
+    a log handler may use the Rig.
     """
 
     def __init__(self, transport: Transport) -> None:
@@ -51,9 +59,25 @@ class Connection:
         self._request_ids = itertools.count(1)
         self._lock = threading.Lock()
         """Serialises requests from several threads."""
+        self._state = threading.Condition()
+        """Guards the fields below, shared with the reader thread."""
+        self._outstanding: _Outstanding | None = None
+        self._disconnect: Exception | None = None
+        """Why the connection ended, kept so every later request fails the same way."""
+        self._closing = False
+        """Set once `close()` starts."""
         self._log_level = 0  # Log Events from before SetLogLevel's reply are a backlog.
         self._python_log_level = logging.NOTSET
         """The user's `log_level`: Rig records below it aren't forwarded."""
+        self._events: queue.SimpleQueue[tuple[_wire.LogEvent, int] | None] = queue.SimpleQueue()
+        """Log Events for the dispatcher, each with the user's level when it arrived."""
+        self._stop_reading = threading.Event()
+        self._reader = threading.Thread(
+            target=self._read, name=f"itch reader {self.name}", daemon=True
+        )
+        self._dispatcher = threading.Thread(
+            target=self._dispatch, name=f"itch logs {self.name}", daemon=True
+        )
         self.hello: _wire.HelloReply
 
     @classmethod
@@ -73,6 +97,8 @@ class Connection:
         """
         connection = cls(transport)
         try:
+            connection._reader.start()
+            connection._dispatcher.start()
             try:
                 hello = connection.request(_wire.Hello(), _wire.HelloReply)
             except DisconnectedError as err:
@@ -94,7 +120,7 @@ class Connection:
             connection.name = hello.label
             connection.set_log_level(log_level)
         except BaseException:
-            transport.close()
+            connection.close()
             raise
         return connection
 
@@ -106,34 +132,50 @@ class Connection:
     def set_log_level(self, python_level: int | None) -> None:
         """Forwards the Rig's log messages at `python_level` and above, or none if `None`."""
         level = _rig_log_level(python_level)
-        self.request(_wire.SetLogLevel(level), _wire.SetLogLevelReply)
-        self._log_level = level
-        self._python_log_level = python_level or logging.NOTSET
+
+        def apply() -> None:
+            # Run by the reader as it takes the reply, so the Log Events before it, the
+            # backlog, meet the old level and every later one the new.
+            self._log_level = level
+            self._python_log_level = python_level or logging.NOTSET
+
+        with self._lock:
+            self._exchange(_wire.SetLogLevel(level), _wire.SetLogLevelReply, apply)
 
     def request(self, body: _wire.RequestBody, reply: type[_Reply]) -> _Reply:
         """Sends `body` and returns its reply, sending it once more if the Rig stays silent.
 
         Raises the `ItchError` for the Rig's error reply, `NotRespondingError` if it stays
-        silent, `DisconnectedError` if the connection fails, and `ItchError` for a malformed
-        reply.
+        silent, `DisconnectedError` if the connection fails or has failed, and `ItchError` for
+        a malformed reply.
         """
-        events: list[_wire.LogEvent] = []
-        try:
-            with self._lock:
-                return self._exchange(body, reply, events)
-        finally:
-            self._forward(events)
+        with self._lock:
+            return self._exchange(body, reply)
 
     def close(self) -> None:
-        """Forwards the Log Events still on their way, then closes. Safe to call twice."""
-        events: list[_wire.LogEvent] = []
-        if self._log_level:
-            with self._lock, contextlib.suppress(Disconnected, _wire.DecodeError):
-                self._receive_pending(events)
+        """Forwards the Log Events still on their way, then closes. Safe to call twice.
+
+        Stops and joins the reader and the dispatcher, unless called from one of them.
+        """
+        with self._state:
+            if self._closing:
+                return
+            self._closing = True
+            logs_on = self._log_level > 0 and self._disconnect is None
         try:
-            self._forward(events)
+            if logs_on:
+                time.sleep(_LOG_DRAIN_TIMEOUT)  # The reader takes in what is on its way.
+            with self._state:
+                self._log_level = 0  # The reader queues no more Log Events.
+            self._events.put(None)
+            self._join(self._dispatcher)  # Its handlers may still use the Rig.
         finally:
-            self._log_level = 0
+            with self._state:
+                if self._disconnect is None:
+                    self._disconnect = Disconnected("closed")
+                self._state.notify_all()
+            self._stop_reading.set()
+            self._join(self._reader)
             self._transport.close()
 
     def __enter__(self) -> Self:
@@ -148,68 +190,165 @@ class Connection:
         self.close()
 
     def _exchange(
-        self, body: _wire.RequestBody, reply: type[_Reply], events: list[_wire.LogEvent]
+        self,
+        body: _wire.RequestBody,
+        reply: type[_Reply],
+        on_reply: Callable[[], None] | None = None,
     ) -> _Reply:
-        try:
-            for _ in range(2):
-                if (answer := self._attempt(body, reply, events)) is not None:
-                    return answer
-        except Disconnected as err:
-            raise DisconnectedError from err
-        except _wire.DecodeError as err:
-            raise ItchError(f"Rig {self.name} sent a malformed reply: {err}") from err
+        """Sends `body` up to twice. Call it holding `_lock`.
+
+        `on_reply` runs on the reader thread as it takes the reply, before it reads on.
+        """
+        for _ in range(2):
+            if (answer := self._attempt(body, reply, on_reply)) is not None:
+                return answer
         raise NotRespondingError(self.name)
 
     def _attempt(
-        self, body: _wire.RequestBody, reply: type[_Reply], events: list[_wire.LogEvent]
+        self,
+        body: _wire.RequestBody,
+        reply: type[_Reply],
+        on_reply: Callable[[], None] | None,
     ) -> _Reply | None:
         """Sends `body` once and returns its reply, or `None` after `REQUEST_TIMEOUT`."""
         request_id = next(self._request_ids) & 0xFFFF_FFFF
-        self._transport.send(_wire.encode(_wire.Request(request_id, body)))
-        deadline = time.monotonic() + REQUEST_TIMEOUT
-        while (remaining := deadline - time.monotonic()) > 0:
-            payload = self._transport.receive(remaining)
-            if payload is None:
-                break
-            if isinstance(body, _wire.Hello):
-                theirs = _wire.hello_protocol(payload, request_id)
-                if theirs not in (None, _wire.PROTOCOL):
-                    raise ProtocolMismatchError(self.name, theirs, _wire.PROTOCOL)
-            message = _wire.decode(payload)
+        outstanding = _Outstanding(request_id, body, reply, on_reply)
+        with self._state:
+            self._raise_if_disconnected()
+            self._outstanding = outstanding
+        try:
+            try:
+                self._transport.send(_wire.encode(_wire.Request(request_id, body)))
+            except Disconnected as err:
+                self._disconnected(err)
+            with self._state:
+                self._state.wait_for(
+                    lambda: outstanding.done or self._disconnect is not None, REQUEST_TIMEOUT
+                )
+                self._outstanding = None  # A late reply now answers nothing.
+                if outstanding.error is not None:
+                    raise outstanding.error
+                if outstanding.done:
+                    return cast(_Reply, outstanding.reply)
+                self._raise_if_disconnected()
+                return None
+        finally:
+            with self._state:
+                self._outstanding = None  # Also when sending fails or is interrupted.
+
+    def _raise_if_disconnected(self) -> None:
+        """Raises `DisconnectedError` once the connection has ended. Call it holding `_state`.
+
+        The seam for telling an expected disconnect, such as after a network change, apart.
+        """
+        if self._disconnect is not None:
+            raise DisconnectedError from self._disconnect
+
+    def _disconnected(self, err: Exception) -> None:
+        """Remembers that the connection ended, and wakes the request waiting on it."""
+        with self._state:
+            if self._disconnect is None:
+                self._disconnect = err
+            self._state.notify_all()
+
+    def _read(self) -> None:
+        """The reader thread: receives every payload until `close()` or a disconnect."""
+        try:
+            while not self._stop_reading.is_set():
+                if (payload := self._transport.receive(_READ_POLL)) is not None:
+                    with self._state:
+                        self._route(payload)
+        except Exception as err:  # Disconnected, or a bug that mustn't leave a request waiting.
+            self._disconnected(err)
+
+    def _route(self, payload: bytes) -> None:
+        """Hands a reply to the request waiting for it, and Log Events to the dispatcher.
+
+        Call it holding `_state`. Replies to no request, or to an earlier one, are dropped, and
+        so is a malformed payload while no request waits.
+        """
+        outstanding = self._outstanding
+        if outstanding is not None and outstanding.done:
+            outstanding = None
+        try:
+            message = self._decode(payload, outstanding)
             if isinstance(message, _wire.LogEvent):
-                events.append(message)
-                continue
-            if (
-                not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
-                or message.request_id != request_id
-            ):
-                continue  # Not a reply, or a reply to an earlier request.
-            if isinstance(message, _wire.ErrorResponse):
-                raise rig_error(self.name, body.TYPE.name, message.code, message.detail)
-            if not isinstance(message.body, reply):
-                raise _wire.DecodeError(f"{type(message.body).__name__} answers {body.TYPE.name}")
-            return message.body
-        return None
-
-    def _receive_pending(self, events: list[_wire.LogEvent]) -> None:
-        """Collects the Log Events that arrived after the last reply."""
-        deadline = time.monotonic() + _LOG_DRAIN_TIMEOUT
-        while (remaining := deadline - time.monotonic()) > 0:
-            payload = self._transport.receive(remaining)
-            if payload is None:
+                if message.level <= self._log_level:
+                    self._events.put((message, self._python_log_level))
                 return
-            if isinstance(message := _wire.decode(payload), _wire.LogEvent):
-                events.append(message)
+            if (
+                outstanding is None
+                or not isinstance(message, _wire.OkResponse | _wire.ErrorResponse)
+                or message.request_id != outstanding.request_id
+            ):
+                return  # Not a reply, or a reply to an earlier request.
+            outstanding.reply = self._answer(outstanding, message)
+        except ItchError as err:
+            if outstanding is None:
+                return
+            outstanding.error = err
+        outstanding.done = True
+        self._state.notify_all()
 
-    def _forward(self, events: list[_wire.LogEvent]) -> None:
-        """Logs `events` to `itch.rig`. Called outside the lock, so a handler may use the Rig."""
-        for event in events:
-            if event.level > self._log_level:
-                continue
-            if event.dropped and self._python_log_level <= logging.WARNING:
-                _RIG_LOGGER.warning("Rig %s dropped %d log messages", self.name, event.dropped)
-            if (level := _PYTHON_LEVELS[event.level - 1]) >= self._python_log_level:
-                _RIG_LOGGER.log(level, "Rig %s: %s", self.name, event.text)
+    def _decode(self, payload: bytes, outstanding: _Outstanding | None) -> _wire.Message:
+        """Decodes `payload`. Raises `ItchError` if it's malformed, or answers `Hello` in another
+        protocol."""
+        if outstanding is not None and isinstance(outstanding.body, _wire.Hello):
+            theirs = _wire.hello_protocol(payload, outstanding.request_id)
+            if theirs not in (None, _wire.PROTOCOL):
+                raise ProtocolMismatchError(self.name, theirs, _wire.PROTOCOL)
+        try:
+            return _wire.decode(payload)
+        except _wire.DecodeError as err:
+            raise self._malformed(err) from err
+
+    def _answer(
+        self, outstanding: _Outstanding, message: _wire.OkResponse | _wire.ErrorResponse
+    ) -> _wire.ReplyBody:
+        """The reply `message` gives `outstanding`, raising `ItchError` if it's an error."""
+        request = outstanding.body.TYPE.name
+        if isinstance(message, _wire.ErrorResponse):
+            raise rig_error(self.name, request, message.code, message.detail)
+        if not isinstance(message.body, outstanding.reply_type):
+            raise self._malformed(f"{type(message.body).__name__} answers {request}")
+        if outstanding.on_reply is not None:
+            outstanding.on_reply()
+        return message.body
+
+    def _malformed(self, problem: object) -> ItchError:
+        return ItchError(f"Rig {self.name} sent a malformed reply: {problem}")
+
+    def _dispatch(self) -> None:
+        """The dispatcher thread: logs each Log Event until `close()` queues `None`."""
+        while (item := self._events.get()) is not None:
+            event, python_level = item
+            with contextlib.suppress(Exception):  # As `logging` does, keep going.
+                self._forward(event, python_level)
+
+    def _forward(self, event: _wire.LogEvent, python_level: int) -> None:
+        """Logs `event` to `itch.rig`, with the user's level when it arrived."""
+        if event.dropped and python_level <= logging.WARNING:
+            _RIG_LOGGER.warning("Rig %s dropped %d log messages", self.name, event.dropped)
+        if (level := _PYTHON_LEVELS[event.level - 1]) >= python_level:
+            _RIG_LOGGER.log(level, "Rig %s: %s", self.name, event.text)
+
+    def _join(self, thread: threading.Thread) -> None:
+        """Waits for `thread` to end, unless it is the caller or hasn't started."""
+        if thread.ident is not None and thread is not threading.current_thread():
+            thread.join()
+
+
+@dataclasses.dataclass
+class _Outstanding:
+    """The one request waiting for its reply, which the reader fills in."""
+
+    request_id: int
+    body: _wire.RequestBody
+    reply_type: type[_wire.ReplyBody]
+    on_reply: Callable[[], None] | None
+    done: bool = False
+    reply: _wire.ReplyBody | None = None
+    error: ItchError | None = None
 
 
 def same_hardware_id(a: str, b: str) -> bool:
