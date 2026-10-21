@@ -154,7 +154,9 @@ def test_dropping_a_usb_rig_releases_its_lock_and_port(pty_rig: str) -> None:
 
 
 def test_usb_label_reconnect_recovers_after_a_failed_serial_write(pty_rig: str) -> None:
-    import termios  # The pty fixture skips this test outside Linux.
+    if sys.platform != "linux":
+        pytest.skip("needs a Linux pty")
+    import termios
 
     with Rig.connect(pty_rig, holder="alice") as old:
         old.set(1)
