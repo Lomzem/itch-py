@@ -99,7 +99,7 @@ Channels are numbered 1 to 16, as on the board. `"on"` means the contact is clos
 ```python
 rig.set_channel(3, "on")
 rig.set_channels({1: "on", 5: "off"})  # one write; other Channels stay as they are
-rig.clear()  # every Channel off
+rig.clear_all()  # every Channel off
 
 print(rig.get_channel(3))  # "off"
 print(rig.get_channels())  # {1: "off", 2: "off", ..., 16: "off"}

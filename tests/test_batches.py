@@ -20,7 +20,7 @@ def test_fields_sharing_a_channel_read_the_same_switch(rig: Rig) -> None:
 def test_a_batch_changes_nothing_on_the_rig_until_the_block_ends(sim: str) -> None:
     with Rig.connect(sim) as rig, Rig.connect(sim) as watcher:
         dut = AcmeWidget(rig)
-        rig.clear()
+        rig.clear_all()
         with dut.batch():
             dut.resolution.set("4k")
             dut.mode.set("night", encoding=2)
@@ -40,7 +40,7 @@ def test_a_batch_is_one_mask_write_when_the_block_ends() -> None:
 
 def test_a_batch_sets_every_field_together(rig: Rig) -> None:
     dut = AcmeWidget(rig)
-    rig.clear()
+    rig.clear_all()
     rig.set_channel(16, "on")
     with dut.batch():
         dut.resolution.set("1080p")
@@ -84,7 +84,7 @@ def test_fields_that_disagree_on_a_shared_channel_change_nothing(rig: Rig) -> No
         r'CH4: refresh="60hz" needs off, but mode="night" needs on\. Set only one of them in a '
         r"batch, or pick Values that agree\. No Channels were changed\."
     )
-    rig.clear()
+    rig.clear_all()
     with pytest.raises(BatchConflictError, match=message):
         batch_refresh_and_mode(dut)
     assert rig.get_channels() == ALL_OFF
@@ -92,7 +92,7 @@ def test_fields_that_disagree_on_a_shared_channel_change_nothing(rig: Rig) -> No
 
 def test_a_conflict_names_the_field_set_first_first(rig: Rig) -> None:
     dut = AcmeWidget(rig)
-    rig.clear()
+    rig.clear_all()
     message = r'CH3: tone="1khz" needs on, but picture="black" needs off\.'
     with pytest.raises(BatchConflictError, match=message):
         batch_tone_and_picture(dut)
@@ -101,7 +101,7 @@ def test_a_conflict_names_the_field_set_first_first(rig: Rig) -> None:
 
 def test_an_error_inside_a_batch_changes_nothing(rig: Rig) -> None:
     dut = AcmeWidget(rig)
-    rig.clear()
+    rig.clear_all()
     with pytest.raises(ValueError, match="no Value"):
         batch_with_a_typo(dut)
     assert rig.get_channels() == ALL_OFF
@@ -111,7 +111,7 @@ def test_an_error_inside_a_batch_changes_nothing(rig: Rig) -> None:
 
 def test_printing_a_dut_shows_every_fields_value(rig: Rig) -> None:
     dut = AcmeWidget(rig)
-    rig.clear()
+    rig.clear_all()
     dut.resolution.set("1080p")
     dut.mode.set("night", encoding=2)
     assert str(dut) == (
@@ -122,7 +122,7 @@ def test_printing_a_dut_shows_every_fields_value(rig: Rig) -> None:
 
 def test_printing_a_dut_shows_the_positions_of_a_field_that_matches_no_value(rig: Rig) -> None:
     dut = AcmeWidget(rig)
-    rig.clear()
+    rig.clear_all()
     assert str(dut).startswith('AcmeWidget(resolution=["off", "off"] (no Value), picture="black"')
 
 
@@ -157,7 +157,7 @@ def test_a_conflict_on_several_channels_names_the_first_and_who_set_it(rig: Rig)
         r'^CH1: right="low" needs off, but both="up" needs on\. Set only one of them in a batch, '
         r"or pick Values that agree\. No Channels were changed\.$"
     )
-    rig.clear()
+    rig.clear_all()
     with pytest.raises(BatchConflictError, match=message):
         batch_left_right_both(dut)
     assert rig.get_channels() == ALL_OFF
@@ -176,7 +176,7 @@ class Inherited(AcmeWidget):
 
 def test_printing_a_dut_shows_inherited_fields_too(rig: Rig) -> None:
     dut = Inherited(rig)
-    rig.clear()
+    rig.clear_all()
     dut.resolution.set("4k")
     assert str(dut).startswith('Inherited(resolution="4k", picture="black"')
     assert str(dut).endswith('mode="cinema", hdmi="hdmi off")')

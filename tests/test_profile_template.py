@@ -7,7 +7,7 @@ from itch import Rig
 
 def test_the_template_drives_a_rig(rig: Rig) -> None:
     dut = Template(rig)
-    rig.clear()
+    rig.clear_all()
     with dut.batch():
         dut.resolution.set("1080p")
         dut.mode.set("night", encoding=2)
