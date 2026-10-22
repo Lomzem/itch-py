@@ -109,8 +109,8 @@ class AcmeWidget(Profile):
     resolution = field(
         channels=[1, 2],
         values={
-            "720p": ["on", "off"],
-            "1080p": ["off", "on"],
+            "720p": [1, 0],
+            "1080p": [0, 1],
         },
     )
 
@@ -121,7 +121,7 @@ with Rig.connect(profile=AcmeWidget) as dut:
     dut.apply(resolution="720p")
 ```
 
-Each Value has one on/off position for each Channel in its Field.
+Each Value lists one position for each Channel in its Field, in `channels` order: 1 for on, 0 for off.
 `dut.apply()` checks all named Fields before it changes their Channels in one write.
 Invalid Values or conflicting Fields leave all Channels unchanged.
 

@@ -144,9 +144,9 @@ def test_field_apply_rejects_an_encoding_of_another_field_without_writing() -> N
 
 
 class Overlapping(Profile):
-    left = field(channels=[2], values={"low": ["off"], "high": ["on"]})
-    right = field(channels=[1], values={"low": ["off"], "high": ["on"]})
-    both = field(channels=[1, 2], values={"mixed": ["on", "off"], "up": ["on", "on"]})
+    left = field(channels=[2], values={"low": [0], "high": [1]})
+    right = field(channels=[1], values={"low": [0], "high": [1]})
+    both = field(channels=[1, 2], values={"mixed": [1, 0], "up": [1, 1]})
 
 
 def test_field_apply_names_the_first_conflicting_channel_and_who_set_it() -> None:

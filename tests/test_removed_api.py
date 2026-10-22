@@ -50,9 +50,9 @@ def test_removed_methods_name_their_replacements_and_stay_off_the_public_surface
 
 def test_former_method_names_are_usable_fields(sim: str) -> None:
     class AcmeWidget(Profile):
-        batch = field(channels=[1], values={"disabled": ["off"], "enabled": ["on"]})
-        close = field(channels=[2], values={"disabled": ["off"], "enabled": ["on"]})
-        set_channels = field(channels=[3], values={"disabled": ["off"], "enabled": ["on"]})
+        batch = field(channels=[1], values={"disabled": [0], "enabled": [1]})
+        close = field(channels=[2], values={"disabled": [0], "enabled": [1]})
+        set_channels = field(channels=[3], values={"disabled": [0], "enabled": [1]})
 
     with Rig.connect(sim, AcmeWidget) as dut:
         dut.clear_all()

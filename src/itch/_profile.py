@@ -13,6 +13,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Generic,
+    Literal,
     LiteralString,
     Never,
     NoReturn,
@@ -23,7 +24,7 @@ from typing import (
 )
 
 from itch._errors import BatchConflictError, ItchError, ProfileError
-from itch._rig import ALL_CHANNELS, CHANNELS, REMOVED, ChannelState, Position, Rig, missing
+from itch._rig import ALL_CHANNELS, CHANNELS, REMOVED, ChannelState, Rig, missing
 
 V = TypeVar("V", bound=LiteralString)
 P = TypeVar("P", bound="Profile")
@@ -67,14 +68,17 @@ def alias(value: str) -> Alias:
     return Alias(value)
 
 
+Position = Literal[0, 1]
+"""One Channel in an Encoding: 1 for on, 0 for off."""
+
 Encodings = list[Position] | list[list[Position]] | Alias
 """What a Value is: one Encoding, a list of Encodings, or an alias."""
 
 
 def field(channels: list[int], values: dict[V, Encodings]) -> Field[V]:
-    """Declares a Field: the Channels it uses, and each Value's on/off positions.
+    """Declares a Field: the Channels it uses, and each Value's positions.
 
-    List one position per Channel, in `channels` order.
+    List one position per Channel, in `channels` order: 1 for on, 0 for off.
     """
     return Field(channels, values)
 
@@ -119,7 +123,7 @@ class Field(Generic[V]):
             if mask & 1 << (channel - 1):
                 raise ProfileError(f"{where}: Channel {channel} is listed twice in `channels`.")
             mask |= 1 << (channel - 1)
-        example = _show(["on"] * len(self._channels))
+        example = _show([1] * len(self._channels))
         if not isinstance(values, dict):
             raise ProfileError(
                 f"{where}: `values` should be a dict of names and positions, "
@@ -176,9 +180,9 @@ class Field(Generic[V]):
         """A Value's Encodings, from one list of positions or a list of such lists."""
         if not isinstance(spec, list) or not spec:
             raise ProfileError(
-                f'{self._where}: Value "{value}" should be a list of on/off, one per Channel, '
-                f'e.g. "{value}": {example}. If it has several Encodings, put one such list per '
-                "line inside another list."
+                f'{self._where}: Value "{value}" should be a list of 1 (on) or 0 (off), one per '
+                f'Channel, e.g. "{value}": {example}. If it has several Encodings, put one such '
+                "list per line inside another list."
             )
         items = cast(list[object], spec)
         if all(isinstance(item, list) for item in items):
@@ -200,15 +204,17 @@ class Field(Generic[V]):
             channels = ", ".join(f"CH{channel}" for channel in self._channels)
             raise ProfileError(
                 f"{where}: {label} has {_count(len(positions), 'position')}, but {self.name} uses "
-                f"{_count(n, 'Channel')} ({channels}). Give one on/off per Channel, in that order."
+                f"{_count(n, 'Channel')} ({channels}). Give one 1 or 0 per Channel, in that order."
             )
         bits = 0
         for channel, position in zip(self._channels, positions, strict=True):
-            if position not in ("on", "off"):
+            # bool is an int too, but True isn't how a Profile writes a position.
+            if type(position) is not int or position not in (0, 1):
+                shown = f'"{position}"' if isinstance(position, str) else repr(position)
                 raise ProfileError(
-                    f'{where}: {label} has "{position}" for CH{channel}. Use "on" or "off".'
+                    f"{where}: {label} has {shown} for CH{channel}. Use 1 for on or 0 for off."
                 )
-            if position == "on":
+            if position:
                 bits |= 1 << (channel - 1)
         if (other := seen.get(bits)) is not None:
             other_value, other_label = other
@@ -284,7 +290,7 @@ class Field(Generic[V]):
         return found.label + (f" (Encoding {found.number})" if found.count > 1 else "")
 
     def _positions(self, bits: int) -> list[Position]:
-        return ["on" if bits >> (channel - 1) & 1 else "off" for channel in self._channels]
+        return [1 if bits >> (channel - 1) & 1 else 0 for channel in self._channels]
 
     @overload
     def __get__(self, dut: None, owner: type | None = None) -> Field[V]: ...
@@ -354,7 +360,7 @@ class Encoding(Generic[V]):
 
     @property
     def positions(self) -> list[Position]:
-        """The Field's Channels in this Encoding, in `channels` order."""
+        """The Field's Channels in this Encoding, in `channels` order: 1 for on, 0 for off."""
         return self._selection.positions
 
     def set(self) -> None:
@@ -396,7 +402,7 @@ class _Selection:
         return f'{self.field.name}="{self.value}"'
 
     def describe(self) -> str:
-        """Such as `mode="night" Encoding 2 of 3 ["on", "on", "off"]`."""
+        """Such as `mode="night" Encoding 2 of 3 [1, 1, 0]`."""
         return f"{self.label} Encoding {self.number} of {self.count} {_show(self.positions)}"
 
 
@@ -574,7 +580,7 @@ def _union(selections: list[_Selection]) -> tuple[int, int]:
         if clash := mask & field_mask & (values ^ bits):
             bit = clash & -clash
             other = next(s for s in selections if s.field._mask & bit)
-            needs, other_needs = _position(bits, bit), _position(~bits, bit)
+            needs, other_needs = _state(bits, bit), _state(~bits, bit)
             raise BatchConflictError(
                 f"CH{bit.bit_length()}: {other.label} needs {other_needs}, but "
                 f"{selection.label} needs {needs}. Set only one of them, or pick Values "
@@ -653,12 +659,12 @@ def _check_repeated_values(cls: type[Profile], fields: dict[str, Field[Any]]) ->
                 seen.add(key.value)
 
 
-def _show(positions: Sequence[str]) -> str:
-    """Positions the way a Profile lists them: `["on", "off"]`."""
-    return "[" + ", ".join(f'"{position}"' for position in positions) + "]"
+def _show(positions: Sequence[int]) -> str:
+    """Positions the way a Profile lists them: `[1, 0]`."""
+    return "[" + ", ".join(str(position) for position in positions) + "]"
 
 
-def _position(bits: int, channel_bit: int) -> Position:
+def _state(bits: int, channel_bit: int) -> str:
     return "on" if bits & channel_bit else "off"
 
 

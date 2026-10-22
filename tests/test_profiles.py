@@ -55,8 +55,8 @@ def test_encodings_sweeps_every_encoding_of_a_value(dut: AcmeWidget) -> None:
 
 def test_an_encoding_shows_its_value_number_and_positions(dut: AcmeWidget) -> None:
     encoding = dut.mode.encodings("night")[1]
-    assert encoding.positions == ["on", "off", "on"]
-    assert repr(encoding) == 'mode="night" Encoding 2 of 3 ["on", "off", "on"]'
+    assert encoding.positions == [1, 0, 1]
+    assert repr(encoding) == 'mode="night" Encoding 2 of 3 [1, 0, 1]'
 
 
 def test_encodings_of_an_alias_are_its_values(dut: AcmeWidget) -> None:
@@ -101,9 +101,7 @@ def test_an_encoding_out_of_range_says_how_many_there_are(
 
 def test_get_raises_when_the_channels_match_no_value(dut: AcmeWidget) -> None:
     dut.apply(0x0010, mask=0x0038)
-    message = (
-        r'CH4, CH5, CH6 are \["off", "on", "off"\], which isn\'t any Value of AcmeWidget\.mode\.'
-    )
+    message = r"CH4, CH5, CH6 are \[0, 1, 0\], which isn't any Value of AcmeWidget\.mode\."
     with pytest.raises(ItchError, match=message):
         dut.mode.get()
     with pytest.raises(ItchError, match=message):
@@ -130,11 +128,11 @@ def test_printing_a_dut_shows_the_positions_of_a_field_that_matches_no_value(
     dut: AcmeWidget,
 ) -> None:
     dut.clear_all()
-    assert str(dut).startswith('AcmeWidget(resolution=["off", "off"] (no Value), picture="black"')
+    assert str(dut).startswith('AcmeWidget(resolution=[0, 0] (no Value), picture="black"')
 
 
 class Inherited(AcmeWidget):
-    hdmi = field(channels=[8], values={"hdmi off": ["off"], "hdmi on": ["on"]})
+    hdmi = field(channels=[8], values={"hdmi off": [0], "hdmi on": [1]})
 
 
 def test_printing_a_dut_shows_inherited_fields_too(sim: str) -> None:

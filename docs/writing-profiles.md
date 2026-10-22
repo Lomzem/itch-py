@@ -4,6 +4,12 @@ A Profile lets a test script say `dut.resolution.set("1080p")` instead of "turn 
 
 The examples use the Acme Widget, a made-up DUT.
 
+## Updating an existing Profile
+
+Profile positions now use integers. Replace `"on"` with `1` and `"off"` with `0` inside each Encoding, including nested lists. Older string positions raise `ProfileError` when the Profile loads. Keep Value names and Alias names as strings.
+
+`Encoding.positions` also returns numeric lists, such as `[1, 0]`. Update any script that compares those positions with strings. Calls such as `dut.resolution.set("1080p")` keep the same form.
+
 ## Before you start
 
 You need:
@@ -34,9 +40,9 @@ Each setting of the DUT is a **Field**. This block is one Field:
     resolution = field(
         channels=[1, 2],
         values={
-            "720p": ["on", "off"],
-            "1080p": ["off", "on"],
-            "4k": ["on", "on"],
+            "720p": [1, 0],
+            "1080p": [0, 1],
+            "4k": [1, 1],
         },
     )
 ```
@@ -45,13 +51,13 @@ Fill in three things:
 
 - **The Field's name**, before the `=`: here `resolution`. Scripts use it as `dut.resolution`. Use lowercase letters, digits and `_`, starting with a letter: `resolution`, `audio_out`, `sw2_mode`. No spaces or dashes, and none of the [names a DUT keeps for itself](#names-a-field-cant-have).
 - **`channels`**: the Rig Channels the setting uses, in square brackets, separated by commas.
-- **`values`**: one line per choice, called a **Value**. The name goes in quotes, then a colon, then one `"on"` or `"off"` per Channel, **in the same order as `channels`**. Above, `"1080p": ["off", "on"]` means CH1 off and CH2 on. A Value's name can be anything in quotes, spaces included.
+- **`values`**: one line per choice, called a **Value**. The name goes in quotes, then a colon, then one `1` (on) or `0` (off) per Channel, **in the same order as `channels`**. Above, `"1080p": [0, 1]` means CH1 off and CH2 on. A Value's name can be anything in quotes, spaces included.
 
 Keep the indentation, the commas at the end of each line, and the brackets as they are in the block.
 
 ### On and off
 
-`"on"` is the DIP switch's **ON** position: on most switches that is pushed to the right, or towards the side marked `1` or `ON`. `"off"` is the other side. If the DUT's table writes `1`/`0`, then `1` is `"on"`.
+`1` is the DIP switch's **ON** position: on most switches that is pushed to the right, or towards the side marked `1` or `ON`. `0` is the other side. If the DUT's table writes `ON`/`OFF`, write `ON` as `1` and `OFF` as `0`. Only the numbers `1` and `0` are accepted: not `"on"`, `True` or `2`.
 
 The Rig doesn't care which way the switch is drawn in the manual. If the DUT behaves the opposite of what you expect, check the switch table's ON side before changing the Profile.
 
@@ -67,34 +73,69 @@ Rename the Field, for example to `setting` or `sw1_set`. The list never grows: n
 
 ### A setting on one switch
 
-It still uses square brackets, with one Channel and one position:
+It still uses square brackets, with one Channel and one `1` or `0`:
 
 ```python
     standby = field(
         channels=[7],
         values={
-            "disabled": ["off"],
-            "enabled": ["on"],
+            "disabled": [0],
+            "enabled": [1],
         },
     )
 ```
+
+### A setting on many switches
+
+A Value's list can span several lines. For a Field on all 16 Channels, write four Channels per line, one line per Bank of four switches, and label the lines once in the first Value:
+
+```python
+    # fmt: off
+    routing = field(
+        channels=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        values={
+            "passthrough": [
+                0, 0, 0, 0,  # SW1: CH1 to CH4
+                0, 0, 0, 0,  # SW2: CH5 to CH8
+                0, 0, 0, 0,  # SW3: CH9 to CH12
+                0, 0, 0, 0,  # SW4: CH13 to CH16
+            ],
+            "loopback": [
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1,
+            ],
+            "split": [
+                1, 1, 0, 0,
+                1, 1, 0, 0,
+                0, 0, 1, 1,
+                0, 0, 1, 1,
+            ],
+        },
+    )
+    # fmt: on
+```
+
+The Profile interprets the 16 numbers in `channels` order, whatever the line breaks: `"loopback"` turns on CH1, CH6, CH11 and CH16. The `# fmt: off` and `# fmt: on` lines preserve the grouping when an editor formats on save with Ruff or Black. Without such a formatter you can leave them out.
 
 ## Check the Profile
 
 Run the file (`python acme_widget.py`, or the Run button in VS Code). If nothing is printed, the Profile is fine. If something is wrong, you get a `ProfileError` that names the Field and says what to fix, for example:
 
 ```
-itch._errors.ProfileError: AcmeWidget.resolution: "720p" has 1 position, but resolution uses 2 Channels (CH1, CH2). Give one on/off per Channel, in that order.
+itch._errors.ProfileError: AcmeWidget.resolution: "720p" has 1 position, but resolution uses 2 Channels (CH1, CH2). Give one 1 or 0 per Channel, in that order.
 ```
 
 Common ones:
 
 | Message says | Fix |
 | ------------ | --- |
-| `has 1 position, but … uses 2 Channels` | Give exactly one `"on"`/`"off"` per Channel. |
-| `has "of" for CH2. Use "on" or "off".` | A typo in a position. |
+| `has 1 position, but … uses 2 Channels` | Give exactly one `1` or `0` per Channel. |
+| `has "on" for CH2. Use 1 for on or 0 for off.` | Write `1` for on and `0` for off, without quotes. |
+| `has 2 for CH2. Use 1 for on or 0 for off.` | A typo in a position. |
 | `Channel 17 doesn't exist` | Channels are numbered 1 to 16. |
-| `"720p" and "4k" are both ["on", "off"]` | Two Values have the same positions. Fix one, or make one an alias. |
+| `"720p" and "4k" are both [1, 0]` | Two Values have the same positions. Fix one, or make one an alias. |
 | `the Value "720p" is listed twice` | See [A Value listed twice](#a-value-listed-twice). |
 | `the Value name 720 needs quotes` | Write `"720"`, not `720`. |
 | ``Field `set` clashes with a DUT method`` | Rename the Field. See [Names a Field can't have](#names-a-field-cant-have). |
@@ -139,11 +180,11 @@ Some DUTs accept the same choice through several switch patterns, for example wh
     mode = field(
         channels=[4, 5, 6],
         values={
-            "cinema": ["off", "off", "off"],
+            "cinema": [0, 0, 0],
             "night": [
-                ["on", "off", "off"],
-                ["on", "off", "on"],
-                ["on", "on", "off"],
+                [1, 0, 0],
+                [1, 0, 1],
+                [1, 1, 0],
             ],
         },
     )
@@ -172,7 +213,7 @@ The printed line can be pasted straight into a script to re-run that Encoding.
 If people call one choice by two names, add the second as an **alias** rather than repeating the positions:
 
 ```python
-            "cinema": ["off", "off", "off"],
+            "cinema": [0, 0, 0],
             "movie": alias("cinema"),
 ```
 
@@ -184,11 +225,11 @@ Two Fields may use the same Channel, for example when one switch has two meaning
 
 ```python
     # CH3 sets both the picture and the tone.
-    picture = field(channels=[3], values={"black": ["off"], "bars": ["on"]})
-    tone = field(channels=[3], values={"silent": ["off"], "1khz": ["on"]})
+    picture = field(channels=[3], values={"black": [0], "bars": [1]})
+    tone = field(channels=[3], values={"silent": [0], "1khz": [1]})
 
     # CH4 is `refresh`, and also the first switch of `mode` (channels=[4, 5, 6], above).
-    refresh = field(channels=[4], values={"60hz": ["off"], "50hz": ["on"]})
+    refresh = field(channels=[4], values={"60hz": [0], "50hz": [1]})
 ```
 
 Setting one changes the other: after `dut.picture.set("bars")`, `dut.tone.get()` is `"1khz"`.
@@ -223,8 +264,8 @@ If you copy a line and forget to rename it, Python quietly keeps only the last o
     resolution = field(
         channels=[1, 2],
         values={
-            "720p": ["on", "off"],
-            "720p": ["off", "on"],  # meant "1080p"
+            "720p": [1, 0],
+            "720p": [0, 1],  # meant "1080p"
         },
     )
 ```

@@ -61,10 +61,12 @@ def removed_api_names(address: str) -> None:
 class Mistakes(Profile):
     """Mistakes the editor flags while a Profile is written. Run, each raises `ProfileError`."""
 
-    position_typo = field(channels=[1, 2], values={"a": ["on", "of"]})  # pyright: ignore[reportArgumentType]
-    encoding_typo = field(channels=[1], values={"a": [["on"], ["of"]]})  # pyright: ignore[reportArgumentType]
-    one_string = field(channels=[1, 2], values={"a": "on off"})  # pyright: ignore[reportArgumentType]
-    unquoted_name = field(channels=[1], values={720: ["on"]})  # pyright: ignore[reportArgumentType]
+    position_typo = field(channels=[1, 2], values={"a": [1, 2]})  # pyright: ignore[reportArgumentType]
+    encoding_typo = field(channels=[1], values={"a": [[1], [2]]})  # pyright: ignore[reportArgumentType]
+    on_off_words = field(channels=[1, 2], values={"a": ["on", "off"]})  # pyright: ignore[reportArgumentType]
+    booleans = field(channels=[1, 2], values={"a": [True, False]})  # pyright: ignore[reportArgumentType]
+    one_string = field(channels=[1, 2], values={"a": "1 0"})  # pyright: ignore[reportArgumentType]
+    unquoted_name = field(channels=[1], values={720: [1]})  # pyright: ignore[reportArgumentType]
 
 
 def channel_verbs_with_computed_channel_numbers(rig: Rig) -> None:
