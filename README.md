@@ -6,14 +6,14 @@ A DUT is the device under test. Each Rig has 16 Channels.
 ## Install
 
 Install Python 3.11 or later. Install Git.
-Use the commands below to install v0.3.0 in a virtual environment.
+Use the commands below to install v0.4.0 in a virtual environment.
 
 Linux and macOS:
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install "itch @ git+https://github.com/Lomzem/itch-py.git@v0.3.0"
+python -m pip install "itch @ git+https://github.com/Lomzem/itch-py.git@v0.4.0"
 ```
 
 Windows Command Prompt:
@@ -21,7 +21,7 @@ Windows Command Prompt:
 ```bat
 py -3 -m venv .venv
 .venv\Scripts\activate.bat
-python -m pip install "itch @ git+https://github.com/Lomzem/itch-py.git@v0.3.0"
+python -m pip install "itch @ git+https://github.com/Lomzem/itch-py.git@v0.4.0"
 ```
 
 Use the same terminal to run `itch` and your Python scripts.
@@ -203,10 +203,15 @@ Use the matching firmware or simulator release:
 
 | itch-py | Tested itch release |
 | --- | --- |
+| v0.4.0 | v0.3.0 |
 | v0.3.0 | v0.3.0 |
 | v0.2.0 | v0.3.0 |
 | v0.1.1 | v0.1.1 |
 | v0.1.0 | v0.1.0 |
+
+v0.4.0 changes Profile positions to numeric lists: use `1` for on and `0` for off.
+`Encoding.positions` also returns numbers. See [Updating an existing Profile](docs/writing-profiles.md#updating-an-existing-profile).
+The tested firmware, simulator and protocol are unchanged from v0.3.0.
 
 v0.3.0 changes the Python API. It uses the same protocol as v0.2.0.
 See the [upgrade examples](https://github.com/Lomzem/itch-py/blob/v0.3.0/README.md#upgrading-to-v030) before you update an older script.
