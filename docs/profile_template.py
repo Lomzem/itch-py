@@ -5,8 +5,8 @@
 # 3. For each setting of your DUT, copy the "copy this block" Field below and fill it in.
 # 4. Delete the example Fields you don't need.
 #
-# "on" is a DIP switch's ON position (on most switches: pushed right, or towards "1").
-# "off" is the other side.
+# Write 1 for a switch's ON position (on most switches: pushed right, or towards "1") and 0
+# for the other side, the way a switch table writes them.
 #
 # A Field can't be named set, clear, write, apply, set_all, clear_all, get, get_all,
 # disconnect or rig, or start with "_": those belong to the DUT itself.
@@ -38,20 +38,20 @@ class AcmeWidget(Profile):
     resolution = field(
         channels=[1, 2],
         values={
-            # One "on"/"off" per Channel, in the same order as `channels`.
-            "720p": ["on", "off"],
-            "1080p": ["off", "on"],
-            "4k": ["on", "on"],
+            # One 1 (on) or 0 (off) per Channel, in the same order as `channels`.
+            "720p": [1, 0],
+            "1080p": [0, 1],
+            "4k": [1, 1],
         },
     )
     # ---- end of block --------------------------------------------------------------------
 
-    # A setting on a single switch still lists its Channel and positions in [ ].
+    # A setting on a single switch still lists its Channel and its 1 or 0 in [ ].
     standby = field(
         channels=[7],
         values={
-            "disabled": ["off"],
-            "enabled": ["on"],
+            "disabled": [0],
+            "enabled": [1],
         },
     )
 
@@ -59,15 +59,15 @@ class AcmeWidget(Profile):
     picture = field(
         channels=[3],
         values={
-            "black": ["off"],
-            "bars": ["on"],
+            "black": [0],
+            "bars": [1],
         },
     )
     tone = field(
         channels=[3],
         values={
-            "silent": ["off"],
-            "1khz": ["on"],
+            "silent": [0],
+            "1khz": [1],
         },
     )
 
@@ -75,22 +75,22 @@ class AcmeWidget(Profile):
     refresh = field(
         channels=[4],
         values={
-            "60hz": ["off"],
-            "50hz": ["on"],
+            "60hz": [0],
+            "50hz": [1],
         },
     )
 
     mode = field(
         channels=[4, 5, 6],
         values={
-            "cinema": ["off", "off", "off"],
-            "sport": ["off", "off", "on"],
+            "cinema": [0, 0, 0],
+            "sport": [0, 0, 1],
             # The DUT accepts "night" in three ways (Encodings), one per line.
             # set("night") uses the first one unless you pick another.
             "night": [
-                ["on", "off", "off"],
-                ["on", "off", "on"],
-                ["on", "on", "off"],
+                [1, 0, 0],
+                [1, 0, 1],
+                [1, 1, 0],
             ],
             # Another name for "cinema" (an alias).
             "movie": alias("cinema"),

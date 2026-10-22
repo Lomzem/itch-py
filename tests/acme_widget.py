@@ -7,9 +7,9 @@ class AcmeWidget(Profile):
     resolution = field(
         channels=[1, 2],
         values={
-            "720p": ["on", "off"],
-            "1080p": ["off", "on"],
-            "4k": ["on", "on"],
+            "720p": [1, 0],
+            "1080p": [0, 1],
+            "4k": [1, 1],
         },
     )
 
@@ -17,15 +17,15 @@ class AcmeWidget(Profile):
     picture = field(
         channels=[3],
         values={
-            "black": ["off"],
-            "bars": ["on"],
+            "black": [0],
+            "bars": [1],
         },
     )
     tone = field(
         channels=[3],
         values={
-            "silent": ["off"],
-            "1khz": ["on"],
+            "silent": [0],
+            "1khz": [1],
         },
     )
 
@@ -33,20 +33,20 @@ class AcmeWidget(Profile):
     refresh = field(
         channels=[4],
         values={
-            "60hz": ["off"],
-            "50hz": ["on"],
+            "60hz": [0],
+            "50hz": [1],
         },
     )
 
     mode = field(
         channels=[4, 5, 6],
         values={
-            "cinema": ["off", "off", "off"],
-            "sport": ["off", "off", "on"],
+            "cinema": [0, 0, 0],
+            "sport": [0, 0, 1],
             "night": [
-                ["on", "off", "off"],
-                ["on", "off", "on"],
-                ["on", "on", "off"],
+                [1, 0, 0],
+                [1, 0, 1],
+                [1, 1, 0],
             ],
             "movie": alias("cinema"),
         },

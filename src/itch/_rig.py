@@ -8,7 +8,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping
 from ipaddress import IPv4Address, IPv4Interface
 from types import TracebackType
-from typing import TYPE_CHECKING, Literal, NoReturn, Self, TypeVar, overload
+from typing import TYPE_CHECKING, NoReturn, Self, TypeVar, overload
 
 from itch import _mdns, _wire
 from itch._connection import Connection
@@ -23,9 +23,6 @@ if TYPE_CHECKING:
 
 CHANNELS = range(1, 17)
 """The Channel numbers, CH1 to CH16 as on the board."""
-
-Position = Literal["on", "off"]
-"""A Channel's state. "on" means the contact is closed, like a DIP switch's ON."""
 
 ALL_CHANNELS = 0xFFFF
 """The mask of all 16 Channels."""
