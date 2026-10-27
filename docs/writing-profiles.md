@@ -69,7 +69,7 @@ A DUT has a few methods of its own, alongside its Fields: `set`, `clear`, `write
 itch._errors.ProfileError: AcmeWidget.set: Field `set` clashes with a DUT method; give it another name.
 ```
 
-Rename the Field, for example to `setting` or `sw1_set`. The list never grows: new Rig features go on `dut.rig`, never on the DUT itself, so a Profile that loads today keeps loading after an itch-py upgrade. Names such as `input`, `output`, `format`, `mode`, `state`, `status` and `label` are all fine.
+Rename the Field, for example to `setting` or `sw1_set`. The current design puts new Rig features on `dut.rig`, keeping this reserved list fixed. Names such as `input`, `output`, `format`, `mode`, `state`, `status` and `label` are all fine. itch-py is in alpha, so upgrades may require changes to existing Profiles.
 
 ### A setting on one switch
 
