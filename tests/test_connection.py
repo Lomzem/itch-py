@@ -12,11 +12,14 @@ from tcp_client import other_client
 from itch import DisconnectedError, ItchError, NotRespondingError, Rig, _connection
 from itch._wire import (
     ClearReply,
+    ErrorCode,
+    ErrorResponse,
     GetChannels,
     GetChannelsReply,
     Message,
     OkResponse,
     Request,
+    RequestType,
 )
 
 
@@ -92,8 +95,13 @@ def test_a_connection_dropped_before_the_reply_fails_that_call_at_once_and_every
             rig.get_all()
 
 
-def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
+@pytest.mark.parametrize("error", [False, True])
+def test_a_reply_of_the_wrong_kind_is_malformed(error: bool) -> None:
     def answer(request: Request) -> list[Message]:
+        if error:
+            return [
+                ErrorResponse(RequestType.Clear, request.request_id, ErrorCode.HardwareFault, "")
+            ]
         return [OkResponse(request.request_id, ClearReply(0))]
 
     with (
@@ -101,7 +109,7 @@ def test_a_reply_of_the_wrong_kind_is_malformed() -> None:
         Rig.connect(peer.url) as rig,
         pytest.raises(
             ItchError,
-            match=r"^Rig bench3 sent a malformed reply: ClearReply answers GetChannels$",
+            match=r"^Rig bench3 sent a malformed reply: .* answers GetChannels$",
         ),
     ):
         rig.get_all()

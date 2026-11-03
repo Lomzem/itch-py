@@ -30,6 +30,18 @@ Use the five default triage roles. Before triaging issues or changing their stat
 
 Before exploring the codebase, read `docs/agents/domain.md` for the shared glossary and decisions.
 
+### Verification
+
+For simulator-backed Python and CLI user journeys, use
+[verify-itch-py](.agents/skills/verify-itch-py/SKILL.md), including its feature map.
+
+### Enforced contracts
+
+| Contract | Enforcement |
+| --- | --- |
+| Validated Profile Channels and compiled Encodings stay consistent after the caller edits its input list. | `Field._check()` snapshots Channels; `test_mutating_a_declarations_channels_cannot_change_its_encodings`. |
+| Profile batch writes and display see the same inherited Fields as Python attribute lookup. | `Profile.__init_subclass__()` derives Fields from the full MRO; `test_fields_from_every_profile_base_support_apply_and_printing`. |
+
 ## Repository split
 
 This repo owns the Python client. Firmware, simulator and protocol live in [Lomzem/itch](https://github.com/Lomzem/itch), usually checked out alongside it.

@@ -343,6 +343,10 @@ class Connection:
         """The reply `message` gives `outstanding`, raising `ItchError` if it's an error."""
         request = outstanding.body.TYPE.name
         if isinstance(message, _wire.ErrorResponse):
+            if message.request_type != outstanding.body.TYPE:
+                raise self._malformed(
+                    f"Error response to 0x{message.request_type:02x} answers {request}"
+                )
             raise rig_error(self.name, request, message.code, message.detail)
         if not isinstance(message.body, outstanding.reply_type):
             raise self._malformed(f"{type(message.body).__name__} answers {request}")

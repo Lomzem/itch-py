@@ -6,7 +6,7 @@ import pytest
 from acme_widget import AcmeWidget
 from scripted_rig import channel_writes, granting_writes
 
-from itch import ItchError, Rig, field
+from itch import ItchError, Profile, Rig, field
 
 
 def test_setting_a_field_writes_its_channels_and_leaves_the_rest(dut: AcmeWidget) -> None:
@@ -141,3 +141,55 @@ def test_printing_a_dut_shows_inherited_fields_too(sim: str) -> None:
         dut.resolution.set("4k")
         assert str(dut).startswith('Inherited(resolution="4k", picture="black"')
         assert str(dut).endswith('mode="cinema", hdmi="hdmi off")')
+
+
+def test_mutating_a_declarations_channels_cannot_change_its_encodings(sim: str) -> None:
+    channels = [1, 2]
+
+    class Widget(Profile):
+        mode = field(channels, {"enabled": [1, 0]})
+
+    channels.reverse()
+    with Rig.connect(sim, Widget) as dut:
+        dut.clear_all()
+        encoding = dut.mode.encodings("enabled")[0]
+        assert encoding.positions == [1, 0]
+        encoding.set()
+        assert dut.get_all() == 0x0001
+        assert dut.mode.get_encoding().positions == [1, 0]
+
+
+def test_fields_from_every_profile_base_support_apply_and_printing(sim: str) -> None:
+    class Picture(Profile):
+        picture = field([1], {"bars": [1]})
+
+    class Sound(Profile):
+        tone = field([2], {"tone": [1]})
+
+    class Widget(Picture, Sound):
+        pass
+
+    with Rig.connect(sim, Widget) as dut:
+        dut.clear_all()
+        dut.apply(picture="bars", tone="tone")
+        assert dut.get_all() == 0x0003
+        assert dut.picture.get() == "bars"
+        assert dut.tone.get() == "tone"
+        rendered = str(dut)
+        assert 'picture="bars"' in rendered
+        assert 'tone="tone"' in rendered
+
+
+def test_fields_from_a_plain_mixin_support_apply_and_printing(sim: str) -> None:
+    class Controls:
+        mode = field([1], {"enabled": [1]})
+
+    class Widget(Controls, Profile):
+        pass
+
+    with Rig.connect(sim, Widget) as dut:
+        dut.clear_all()
+        dut.apply(mode="enabled")
+        assert dut.get_all() == 0x0001
+        assert dut.mode.get() == "enabled"
+        assert str(dut) == 'Widget(mode="enabled")'
