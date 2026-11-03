@@ -123,6 +123,10 @@ def labels(url: str) -> None:
     with Rig.connect(url) as rig:
         rig.set_label("verification-bench")
         assert rig.label == "verification-bench"
+    with Rig.connect(url, lock=False) as observer:
+        print("PYTHON RECONNECT", observer.label, "holder", observer.status().holder)
+        assert observer.label == "verification-bench"
+        assert observer.status().holder is None
     console = shutil.which("itch")
     assert console is not None, "The installed itch console command is missing from PATH"
     for entry, label in (

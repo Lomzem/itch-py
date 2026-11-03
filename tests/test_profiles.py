@@ -178,3 +178,18 @@ def test_fields_from_every_profile_base_support_apply_and_printing(sim: str) -> 
         rendered = str(dut)
         assert 'picture="bars"' in rendered
         assert 'tone="tone"' in rendered
+
+
+def test_fields_from_a_plain_mixin_support_apply_and_printing(sim: str) -> None:
+    class Controls:
+        mode = field([1], {"enabled": [1]})
+
+    class Widget(Controls, Profile):
+        pass
+
+    with Rig.connect(sim, Widget) as dut:
+        dut.clear_all()
+        dut.apply(mode="enabled")
+        assert dut.get_all() == 0x0001
+        assert dut.mode.get() == "enabled"
+        assert str(dut) == 'Widget(mode="enabled")'

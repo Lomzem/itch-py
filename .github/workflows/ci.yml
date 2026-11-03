@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -31,3 +34,11 @@ jobs:
           uv run python .agents/skills/verify-itch-py/drive.py profiles
           uv run python .agents/skills/verify-itch-py/drive.py locks
           uv run python .agents/skills/verify-itch-py/drive.py labels
+      - name: Retain journey transcripts
+        if: always() && matrix.os == 'ubuntu-24.04' && matrix.python == '3.11'
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-evidence
+          path: .scratch/repo-improvements/verification-evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore

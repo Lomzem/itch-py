@@ -434,16 +434,23 @@ class Profile:
     _fields: dict[str, Field[Any]]
 
     def __init_subclass__(cls) -> None:
-        own: dict[str, Field[Any]] = {k: v for k, v in vars(cls).items() if isinstance(v, Field)}
-        _check_names(own)
-        _check_repeated_values(cls, own)
-        for f in own.values():
-            f._check()
         # Resolve the same members as Python, including all bases and non-Field overrides.
         members = {
             name: value for base in reversed(cls.__mro__) for name, value in vars(base).items()
         }
         cls._fields = {name: value for name, value in members.items() if isinstance(value, Field)}
+        _check_names(cls._fields)
+        for base in reversed(cls.__mro__):
+            # A valid Field has a nonzero mask; plain mixins have not compiled theirs yet.
+            unchecked: dict[str, Field[Any]] = {
+                name: value
+                for name, value in vars(base).items()
+                if isinstance(value, Field) and not value._mask and cls._fields.get(name) is value
+            }
+            if unchecked:
+                _check_repeated_values(base, unchecked)
+                for f in unchecked.values():
+                    f._check()
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         name = type(self).__name__
@@ -624,7 +631,7 @@ def _check_names(fields: dict[str, Field[Any]]) -> None:
             )
 
 
-def _check_repeated_values(cls: type[Profile], fields: dict[str, Field[Any]]) -> None:
+def _check_repeated_values(cls: type, fields: dict[str, Field[Any]]) -> None:
     """Raises `ProfileError` for a Value name listed twice in one Field.
 
     Python keeps only the last of two equal dict keys, so this reads the Profile's source.

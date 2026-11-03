@@ -20,7 +20,8 @@ connection. CLI completion releases its Lock.
 Preconditions: a fresh simulator passes doctor with its default Label.
 
 - **Run:** `uv run python .agents/skills/verify-itch-py/drive.py labels`.
-- **Python rename:** set `"verification-bench"` and read that Label.
+- **Python rename:** set `"verification-bench"`, disconnect, and read that Label
+  and no Holder from a fresh connection before either CLI command.
 - **Module rename:** after disconnecting Python, invoke
   `python -m itch label URL verification-module`; require exit zero and the new
   Label in stdout; retain stderr too.
@@ -28,7 +29,7 @@ Preconditions: a fresh simulator passes doctor with its default Label.
   exit zero and the new Label in stdout.
 - **Reconnect:** after each CLI command, `Rig.connect(url, lock=False)` reads the
   corresponding new Label and `status().holder is None`.
-- **Proof:** transcript captures all three actions, CLI outputs, both reconnect
+- **Proof:** transcript captures all three actions, CLI outputs, all reconnect
   states and `PASS labels`.
 
 ## Gotchas

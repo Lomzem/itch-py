@@ -62,6 +62,8 @@ The command prints the absolute transcript path under
 Keep that path in the task record. Evidence contains actions, observed values,
 CLI stdout/stderr/exit status where used, reconnect reads, completion or the
 exception, and cleanup success. Require exit code zero and `PASS <feature>`.
+CI retains these transcripts in the `verification-evidence` artifact, including
+failed journeys; download that artifact when a CI journey fails.
 
 Exercise the real user path, capture the action and resulting state, and verify
 effects with fresh public reads, including a separate connection where the
