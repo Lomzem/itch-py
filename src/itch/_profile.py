@@ -439,7 +439,11 @@ class Profile:
         _check_repeated_values(cls, own)
         for f in own.values():
             f._check()
-        cls._fields = {**getattr(super(cls, cls), "_fields", {}), **own}
+        # Resolve the same members as Python, including all bases and non-Field overrides.
+        members = {
+            name: value for base in reversed(cls.__mro__) for name, value in vars(base).items()
+        }
+        cls._fields = {name: value for name, value in members.items() if isinstance(value, Field)}
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         name = type(self).__name__

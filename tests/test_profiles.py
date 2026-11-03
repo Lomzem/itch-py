@@ -158,3 +158,23 @@ def test_mutating_a_declarations_channels_cannot_change_its_encodings(sim: str) 
         assert dut.get_all() == 0x0001
         assert dut.mode.get_encoding().positions == [1, 0]
 
+
+def test_fields_from_every_profile_base_support_apply_and_printing(sim: str) -> None:
+    class Picture(Profile):
+        picture = field([1], {"bars": [1]})
+
+    class Sound(Profile):
+        tone = field([2], {"tone": [1]})
+
+    class Widget(Picture, Sound):
+        pass
+
+    with Rig.connect(sim, Widget) as dut:
+        dut.clear_all()
+        dut.apply(picture="bars", tone="tone")
+        assert dut.get_all() == 0x0003
+        assert dut.picture.get() == "bars"
+        assert dut.tone.get() == "tone"
+        rendered = str(dut)
+        assert 'picture="bars"' in rendered
+        assert 'tone="tone"' in rendered
