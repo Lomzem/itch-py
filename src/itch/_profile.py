@@ -174,6 +174,8 @@ class Field(Generic[V]):
                     f'{where}: alias "{name}" points to "{target}", but there is no such Value.'
                     + _did_you_mean(target, list(encodings))
                 )
+        # Keep the declaration's ordering with its compiled bits, independently of its author.
+        self._channels = self._channels.copy()
         self._mask, self._encodings, self._aliases = mask, encodings, aliases
 
     def _split(self, value: str, spec: object, example: str) -> list[list[object]]:
